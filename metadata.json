@@ -1,0 +1,6 @@
+{
+  "name": "Milan Dating",
+  "description": "Production-ready India-focused dating platform featuring real profiles, interest matching, verified KYC, paid subscriptions, and secure messaging.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

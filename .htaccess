@@ -1,0 +1,26 @@
+# Apache Server Configuration for Milan Dating
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Block access to hidden files (.env, .git, etc.)
+    RewriteRule ^\.(.*)$ - [F,L]
+
+    # Block access to protected directories
+    RewriteRule ^(app|config|database|storage|cron)/ - [F,L]
+    RewriteRule ^.*\.(sql|env|log|ini|json|lock|md|sh|cjs|ts)$ - [F,L]
+
+    # Redirect all other requests to public/
+    RewriteRule ^$ public/ [L]
+    RewriteRule (.*) public/$1 [L]
+</IfModule>
+
+# Prevent directory browsing
+Options -Indexes
+
+# Security Headers (if mod_headers is enabled)
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set X-XSS-Protection "1; mode=block"
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
