@@ -196,19 +196,18 @@
                 theme: { color: '#F59E0B' },
                 handler: async function (response) {
                     await verifyBoostPayment(response);
+                },
+                modal: {
+                    ondismiss: function() {
+                        showToast('Boost payment was cancelled.', 'error');
+                    }
                 }
             };
 
-            if (data.order.is_test_mode) {
-                await verifyBoostPayment({
-                    razorpay_order_id: data.order.id,
-                    razorpay_payment_id: 'pay_test_' + Math.random().toString(36).substr(2, 9),
-                    razorpay_signature: 'sig_test_' + Math.random().toString(36).substr(2, 9)
-                });
-                return;
-            }
-
             const rzp = new Razorpay(options);
+            rzp.on('payment.failed', function (resp) {
+                showToast(resp.error?.description || 'Payment failed. Please try again.', 'error');
+            });
             rzp.open();
 
         } catch (err) {

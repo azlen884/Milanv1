@@ -223,6 +223,13 @@
                 setTimeout(() => el.remove(), 300);
             });
         }, 4000);
+
+        <?php if (\App\Helpers\Auth::check()): ?>
+        // Periodic presence heartbeat for authenticated users
+        setInterval(() => {
+            fetch('/api/call/check').catch(() => {});
+        }, 45000);
+        <?php endif; ?>
     </script>
 </body>
 </html>

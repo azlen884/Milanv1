@@ -10,8 +10,15 @@ try {
   console.error('[Dev Server] MariaDB start check error:', e);
 }
 
-console.log('[Dev Server] Starting Plain PHP 8.x server on 0.0.0.0:3000...');
-const php = spawn('php', ['-S', '0.0.0.0:3000', '-t', 'public', 'router.php'], {
+console.log('[Dev Server] Starting Plain PHP 8.x server on 0.0.0.0:3000 (upload limit 25M)...');
+const php = spawn('php', [
+  '-d', 'upload_max_filesize=25M',
+  '-d', 'post_max_size=30M',
+  '-d', 'memory_limit=256M',
+  '-S', '0.0.0.0:3000',
+  '-t', 'public',
+  'router.php'
+], {
   stdio: 'inherit',
   env: { ...process.env, PHP_CLI_SERVER_WORKERS: '4' }
 });

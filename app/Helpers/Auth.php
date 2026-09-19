@@ -22,6 +22,10 @@ class Auth {
     }
 
     public static function logout(): void {
+        $id = self::id();
+        if ($id) {
+            Database::execute("UPDATE users SET last_active_at = DATE_SUB(NOW(), INTERVAL 1 HOUR) WHERE id = :id", [':id' => $id]);
+        }
         Session::remove('user_id');
         Session::destroy();
         self::$cachedUser = null;
@@ -160,5 +164,16 @@ class Auth {
             [':uid' => $userId]
         );
         return $boost !== null;
+    }
+
+    /**
+     * Check if a user is currently online based on real activity timestamp (within 3 minutes)
+     */
+    public static function isOnline(?string $lastActiveAt, int $thresholdSeconds = 180): bool {
+        if (empty($lastActiveAt)) {
+            return false;
+        }
+        $diff = time() - strtotime($lastActiveAt);
+        return ($diff >= 0 && $diff <= $thresholdSeconds);
     }
 }

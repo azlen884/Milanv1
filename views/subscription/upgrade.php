@@ -139,20 +139,10 @@
                 }
             };
 
-            // If sandbox fallback was returned due to test keys
-            if (data.order.is_test_mode) {
-                // Simulate test payment completion for verification tests
-                const simulatedPaymentId = 'pay_test_' + Math.random().toString(36).substr(2, 9);
-                const simulatedSig = 'sig_test_' + Math.random().toString(36).substr(2, 9);
-                await verifyPayment({
-                    razorpay_order_id: data.order.id,
-                    razorpay_payment_id: simulatedPaymentId,
-                    razorpay_signature: simulatedSig
-                }, planId, 'subscription');
-                return;
-            }
-
             const rzp1 = new Razorpay(options);
+            rzp1.on('payment.failed', function (resp) {
+                showToast(resp.error?.description || 'Payment failed. Please try again.', 'error');
+            });
             rzp1.open();
 
         } catch (err) {

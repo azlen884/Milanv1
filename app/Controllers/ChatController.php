@@ -8,6 +8,7 @@ use App\Helpers\Security;
 use App\Helpers\Session;
 use App\Helpers\View;
 use App\Services\ChatService;
+use App\Services\BotService;
 
 class ChatController {
     public function index(): void {
@@ -18,6 +19,10 @@ class ChatController {
         }
 
         $userId = $user['id'];
+
+        // Process any due admin bot messages for this user (if free plan)
+        BotService::processForUser($userId);
+
         $activeConvId = isset($_GET['id']) ? (int)$_GET['id'] : null;
 
         // Fetch all conversations for user
@@ -126,8 +131,9 @@ class ChatController {
             View::json(['success' => false, 'error' => 'Authentication required.'], 401);
         }
 
-        if (!Session::verifyCsrf($_POST['csrf_token'] ?? '')) {
-            View::json(['success' => false, 'error' => 'Invalid security token.'], 403);
+        $csrfToken = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+        if (!Session::verifyCsrf($csrfToken)) {
+            View::json(['success' => false, 'error' => 'Invalid security token. Please refresh the page.'], 403);
         }
 
         $convId = (int)($_POST['conversation_id'] ?? 0);
@@ -138,31 +144,44 @@ class ChatController {
         }
 
         $file = $_FILES['audio_data'];
-        $allowedMimes = ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav', 'audio/mpeg', 'video/webm'];
-        $val = Security::validateUpload($file, $allowedMimes, 10 * 1024 * 1024);
+        $allowedMimes = [
+            'audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav', 'audio/mpeg', 
+            'video/webm', 'audio/x-matroska', 'video/x-matroska', 'application/octet-stream', 
+            'audio/aac', 'audio/x-wav'
+        ];
+        $val = Security::validateUpload($file, $allowedMimes, 15 * 1024 * 1024);
         if (!$val['valid']) {
             View::json(['success' => false, 'error' => $val['error']], 400);
         }
 
         $uploadDir = dirname(__DIR__, 2) . '/public/uploads/voice';
         if (!is_dir($uploadDir)) {
-            mkdir($uploadDir, 0755, true);
+            mkdir($uploadDir, 0775, true);
         }
 
         $ext = 'webm';
         if (str_contains($val['mime'], 'ogg')) $ext = 'ogg';
         elseif (str_contains($val['mime'], 'wav')) $ext = 'wav';
-        elseif (str_contains($val['mime'], 'mp4')) $ext = 'mp4';
+        elseif (str_contains($val['mime'], 'mp4') || str_contains($val['mime'], 'aac')) $ext = 'mp4';
 
         $filename = Security::randomFilename($ext);
         $targetPath = $uploadDir . '/' . $filename;
 
-        if (!move_uploaded_file($file['tmp_name'], $targetPath)) {
-            View::json(['success' => false, 'error' => 'Failed to save audio file.'], 500);
+        $saved = false;
+        if (is_uploaded_file($file['tmp_name'])) {
+            $saved = move_uploaded_file($file['tmp_name'], $targetPath);
+        } else {
+            $saved = copy($file['tmp_name'], $targetPath);
+        }
+
+        if (!$saved) {
+            View::json(['success' => false, 'error' => 'Failed to save audio file to disk.'], 500);
         }
 
         $mediaUrl = '/uploads/voice/' . $filename;
         $result = ChatService::sendVoiceMessage($user['id'], $convId, $mediaUrl, $duration);
+        $result['media_url'] = $mediaUrl;
+        $result['duration_seconds'] = max(1, $duration);
         View::json($result, $result['success'] ? 200 : 403);
     }
 
@@ -178,6 +197,9 @@ class ChatController {
         if ($convId <= 0) {
             View::json(['messages' => []]);
         }
+
+        // Process bot messages if due
+        BotService::processForUser($user['id']);
 
         // Verify participant
         $conv = Database::one(
@@ -195,10 +217,59 @@ class ChatController {
 
         // Mark as read
         ChatService::markAsRead($convId, $user['id']);
+        Auth::updateLastActive($user['id']);
+
+        // Check if partner is currently typing (real-time typing indicator)
+        $typing = Database::one(
+            "SELECT user_id FROM conversation_typing 
+             WHERE conversation_id = :cid AND user_id != :uid AND updated_at >= DATE_SUB(NOW(), INTERVAL 4 SECOND)",
+            [':cid' => $convId, ':uid' => $user['id']]
+        );
+
+        // Check if partner is online (real-time presence)
+        $partnerId = ($conv['user1_id'] === $user['id']) ? (int)$conv['user2_id'] : (int)$conv['user1_id'];
+        $partner = Database::one("SELECT last_active_at FROM users WHERE id = :pid", [':pid' => $partnerId]);
+        $partnerOnline = Auth::isOnline($partner['last_active_at'] ?? null);
 
         View::json([
             'messages' => $newMessages,
             'perm' => Auth::canSendMessage($user['id']),
+            'is_typing' => !empty($typing),
+            'partner_online' => $partnerOnline,
         ]);
+    }
+
+    /**
+     * Real-time typing status ping
+     */
+    public function typing(): void {
+        $user = Auth::user();
+        if (!$user) {
+            View::json(['success' => false, 'error' => 'Authentication required.'], 401);
+        }
+
+        $convId = (int)($_POST['conversation_id'] ?? 0);
+        $isTyping = (int)($_POST['is_typing'] ?? 1);
+
+        if ($convId <= 0) {
+            View::json(['success' => false, 'error' => 'Invalid conversation.'], 400);
+        }
+
+        if ($isTyping) {
+            Database::execute(
+                "INSERT INTO conversation_typing (conversation_id, user_id, updated_at) 
+                 VALUES (:cid, :uid, NOW()) 
+                 ON DUPLICATE KEY UPDATE updated_at = NOW()",
+                [':cid' => $convId, ':uid' => $user['id']]
+            );
+        } else {
+            Database::execute(
+                "DELETE FROM conversation_typing WHERE conversation_id = :cid AND user_id = :uid",
+                [':cid' => $convId, ':uid' => $user['id']]
+            );
+        }
+
+        Auth::updateLastActive($user['id']);
+        View::json(['success' => true]);
     }
 }

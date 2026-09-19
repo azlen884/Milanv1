@@ -142,6 +142,12 @@ $isActive = function(string $route, bool $exact = false) use ($currentPath): boo
                             <span>All Users</span>
                         </div>
                     </a>
+                    <a href="/admin/bots" class="flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all <?= $isActive('/admin/bots') ? 'bg-rose-50 text-rose-700 font-semibold shadow-xs' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50' ?>">
+                        <div class="flex items-center gap-3">
+                            <i data-lucide="bot" class="w-4 h-4 <?= $isActive('/admin/bots') ? 'text-rose-600' : 'text-slate-400' ?>"></i>
+                            <span>Admin Bots</span>
+                        </div>
+                    </a>
                     <a href="/admin/reports" class="flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all <?= $isActive('/admin/reports') ? 'bg-rose-50 text-rose-700 font-semibold shadow-xs' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50' ?>">
                         <div class="flex items-center gap-3">
                             <i data-lucide="flag" class="w-4 h-4 <?= $isActive('/admin/reports') ? 'text-rose-600' : 'text-slate-400' ?>"></i>

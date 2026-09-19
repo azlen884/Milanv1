@@ -80,8 +80,23 @@ class Security {
         $mime = finfo_file($finfo, $file['tmp_name']);
         finfo_close($finfo);
 
+        // Handle generic mime detected for audio blobs (e.g. webm recording in Chrome/Linux)
+        $isAudioExpected = false;
+        foreach ($allowedMimes as $am) {
+            if (str_starts_with($am, 'audio/') || str_contains($am, 'webm') || str_contains($am, 'ogg')) {
+                $isAudioExpected = true;
+                break;
+            }
+        }
+
         if (!in_array($mime, $allowedMimes, true)) {
-            return ['valid' => false, 'error' => "Invalid file format ({$mime}). Only JPEG, PNG, and WebP images are allowed."];
+            // If audio was expected and client sent audio/webm or audio/ogg container detected as octet-stream/matroska
+            if ($isAudioExpected && in_array($mime, ['application/octet-stream', 'audio/x-matroska', 'video/x-matroska', 'video/webm'], true)) {
+                $mime = 'audio/webm';
+            } else {
+                $typeDesc = $isAudioExpected ? 'audio formats (WebM, OGG, MP4, WAV)' : 'JPEG, PNG, and WebP images';
+                return ['valid' => false, 'error' => "Invalid file format ({$mime}). Only valid {$typeDesc} are allowed."];
+            }
         }
 
         // Additional image validation for image uploads

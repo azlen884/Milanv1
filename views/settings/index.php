@@ -412,8 +412,8 @@
             return;
         }
 
-        if (file.size > 5 * 1024 * 1024) {
-            showToast('Photo size must not exceed 5MB.', 'error');
+        if (file.size > 15 * 1024 * 1024) {
+            showToast('Photo size must not exceed 15MB.', 'error');
             input.value = '';
             return;
         }

@@ -123,7 +123,7 @@ class SettingsController {
         }
 
         $file = $_FILES['photo'];
-        $val = Security::validateUpload($file, ['image/jpeg', 'image/png', 'image/webp'], 5 * 1024 * 1024);
+        $val = Security::validateUpload($file, ['image/jpeg', 'image/png', 'image/webp'], 15 * 1024 * 1024);
         if (!$val['valid']) {
             View::json(['success' => false, 'error' => $val['error']], 400);
         }

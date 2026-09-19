@@ -1237,6 +1237,260 @@ class AdminController {
     }
 
     /**
+     * Admin Bots Management View (Part 7: Admin Bots)
+     */
+    public function bots(): void {
+        $this->ensureSuperAdmin();
+
+        $bots = Database::query(
+            "SELECT b.*, p.age, p.gender, p.city, p.bio,
+                    (SELECT COUNT(*) FROM admin_bot_messages WHERE bot_id = b.id) as message_count,
+                    (SELECT COUNT(*) FROM admin_bot_deliveries WHERE bot_id = b.id) as sent_count
+             FROM admin_bots b
+             JOIN user_profiles p ON b.user_id = p.user_id
+             ORDER BY b.id DESC"
+        );
+
+        foreach ($bots as &$bot) {
+            $bot['messages'] = Database::query(
+                "SELECT * FROM admin_bot_messages WHERE bot_id = :bid ORDER BY delay_minutes ASC, message_order ASC",
+                [':bid' => $bot['id']]
+            );
+        }
+        unset($bot);
+
+        View::renderAdmin('bots', [
+            'pageTitle' => 'Admin Bots & Automated Predefined Messages',
+            'bots' => $bots,
+            'csrfToken' => Session::csrfToken(),
+        ]);
+    }
+
+    /**
+     * Create a new Admin Bot with real profile & optional initial message
+     */
+    public function createBot(): void {
+        $this->ensureSuperAdmin();
+
+        if (!Session::verifyCsrf($_POST['csrf_token'] ?? '')) {
+            Session::flash('error', 'Invalid security token.');
+            header('Location: /admin/bots');
+            exit;
+        }
+
+        $name = trim($_POST['name'] ?? '');
+        $age = max(18, min(80, (int)($_POST['age'] ?? 24)));
+        $gender = in_array($_POST['gender'] ?? '', ['male', 'female'], true) ? $_POST['gender'] : 'female';
+        $city = trim($_POST['city'] ?? 'Mumbai');
+        $bio = trim($_POST['bio'] ?? 'Hello! Nice to meet you here on Milan Dating.');
+        $initialMessage = trim($_POST['initial_message'] ?? '');
+        $initialDelay = max(0, (int)($_POST['initial_delay_minutes'] ?? 0));
+
+        if (empty($name)) {
+            Session::flash('error', 'Bot name is required.');
+            header('Location: /admin/bots');
+            exit;
+        }
+
+        // Handle avatar photo upload
+        $avatarUrl = '/uploads/profiles/default_female.jpg';
+        if ($gender === 'male') {
+            $avatarUrl = '/uploads/profiles/default_male.jpg';
+        }
+
+        if (isset($_FILES['photo']) && !empty($_FILES['photo']['tmp_name'])) {
+            $val = Security::validateUpload($_FILES['photo'], ['image/jpeg', 'image/png', 'image/webp'], 15 * 1024 * 1024);
+            if ($val['valid']) {
+                $uploadDir = dirname(__DIR__, 2) . '/public/uploads/profiles';
+                if (!is_dir($uploadDir)) {
+                    mkdir($uploadDir, 0775, true);
+                }
+                $ext = match ($val['mime']) {
+                    'image/png' => 'png',
+                    'image/webp' => 'webp',
+                    default => 'jpg',
+                };
+                $filename = Security::randomFilename($ext);
+                $target = $uploadDir . '/' . $filename;
+                if (move_uploaded_file($_FILES['photo']['tmp_name'], $target) || copy($_FILES['photo']['tmp_name'], $target)) {
+                    $avatarUrl = '/uploads/profiles/' . $filename;
+                }
+            }
+        }
+
+        // 1. Create real user account for bot
+        $email = 'bot_' . bin2hex(random_bytes(6)) . '@milan.internal';
+        $passwordHash = Security::hashPassword(bin2hex(random_bytes(16)));
+
+        $userId = Database::insert(
+            "INSERT INTO users (email, password_hash, status, is_admin, email_verified_at, last_active_at, created_at)
+             VALUES (:email, :pwd, 'active', 0, NOW(), NOW(), NOW())",
+            [
+                ':email' => $email,
+                ':pwd' => $passwordHash,
+            ]
+        );
+
+        // 2. Create real user profile
+        $lookingFor = ($gender === 'female') ? 'men' : 'women';
+        Database::insert(
+            "INSERT INTO user_profiles (user_id, name, age, gender, looking_for, city, bio, primary_photo, is_verified, kyc_status, created_at)
+             VALUES (:uid, :name, :age, :gender, :lf, :city, :bio, :photo, 1, 'verified', NOW())",
+            [
+                ':uid' => $userId,
+                ':name' => $name,
+                ':age' => $age,
+                ':gender' => $gender,
+                ':lf' => $lookingFor,
+                ':city' => $city,
+                ':bio' => $bio,
+                ':photo' => $avatarUrl,
+            ]
+        );
+
+        // 3. Create Admin Bot record
+        $botId = Database::insert(
+            "INSERT INTO admin_bots (user_id, name, avatar_url, is_active, created_at)
+             VALUES (:uid, :name, :photo, 1, NOW())",
+            [
+                ':uid' => $userId,
+                ':name' => $name,
+                ':photo' => $avatarUrl,
+            ]
+        );
+
+        // 4. If initial message provided, save to admin_bot_messages
+        if (!empty($initialMessage)) {
+            Database::insert(
+                "INSERT INTO admin_bot_messages (bot_id, message_order, delay_minutes, message_text, created_at)
+                 VALUES (:bid, 1, :delay, :msg, NOW())",
+                [
+                    ':bid' => $botId,
+                    ':delay' => $initialDelay,
+                    ':msg' => $initialMessage,
+                ]
+            );
+        }
+
+        AdminAuth::logAudit('create_bot', 'admin_bots', $botId, "Created bot: {$name} (User #{$userId})");
+        Session::flash('success', "Admin Bot '{$name}' created successfully!");
+        header('Location: /admin/bots');
+        exit;
+    }
+
+    /**
+     * Toggle Bot Active/Inactive Status
+     */
+    public function toggleBot(): void {
+        $this->ensureSuperAdmin();
+
+        if (!Session::verifyCsrf($_POST['csrf_token'] ?? '')) {
+            Session::flash('error', 'Invalid security token.');
+            header('Location: /admin/bots');
+            exit;
+        }
+
+        $botId = (int)($_POST['bot_id'] ?? 0);
+        $bot = Database::one("SELECT id, name, is_active FROM admin_bots WHERE id = :id", [':id' => $botId]);
+        if ($bot) {
+            $newStatus = $bot['is_active'] ? 0 : 1;
+            Database::execute("UPDATE admin_bots SET is_active = :status WHERE id = :id", [':status' => $newStatus, ':id' => $botId]);
+            AdminAuth::logAudit('toggle_bot', 'admin_bots', $botId, "Toggled bot {$bot['name']} active to {$newStatus}");
+            Session::flash('success', "Bot '{$bot['name']}' status updated.");
+        }
+
+        header('Location: /admin/bots');
+        exit;
+    }
+
+    /**
+     * Delete Bot and all related data
+     */
+    public function deleteBot(): void {
+        $this->ensureSuperAdmin();
+
+        if (!Session::verifyCsrf($_POST['csrf_token'] ?? '')) {
+            Session::flash('error', 'Invalid security token.');
+            header('Location: /admin/bots');
+            exit;
+        }
+
+        $botId = (int)($_POST['bot_id'] ?? 0);
+        $bot = Database::one("SELECT id, user_id, name FROM admin_bots WHERE id = :id", [':id' => $botId]);
+        if ($bot) {
+            // Delete user account which cascades to profiles, messages, bot records
+            Database::execute("DELETE FROM users WHERE id = :uid", [':uid' => $bot['user_id']]);
+            Database::execute("DELETE FROM admin_bots WHERE id = :id", [':id' => $botId]);
+            AdminAuth::logAudit('delete_bot', 'admin_bots', $botId, "Deleted bot: {$bot['name']}");
+            Session::flash('success', "Bot '{$bot['name']}' and its data deleted.");
+        }
+
+        header('Location: /admin/bots');
+        exit;
+    }
+
+    /**
+     * Add predefined message to bot sequence
+     */
+    public function addBotMessage(): void {
+        $this->ensureSuperAdmin();
+
+        if (!Session::verifyCsrf($_POST['csrf_token'] ?? '')) {
+            Session::flash('error', 'Invalid security token.');
+            header('Location: /admin/bots');
+            exit;
+        }
+
+        $botId = (int)($_POST['bot_id'] ?? 0);
+        $delayMinutes = max(0, (int)($_POST['delay_minutes'] ?? 5));
+        $messageText = trim($_POST['message_text'] ?? '');
+
+        if ($botId <= 0 || empty($messageText)) {
+            Session::flash('error', 'Message text and valid bot are required.');
+            header('Location: /admin/bots');
+            exit;
+        }
+
+        $maxOrder = (int)(Database::one("SELECT MAX(message_order) as m FROM admin_bot_messages WHERE bot_id = :bid", [':bid' => $botId])['m'] ?? 0);
+        $newOrder = $maxOrder + 1;
+
+        Database::insert(
+            "INSERT INTO admin_bot_messages (bot_id, message_order, delay_minutes, message_text, created_at)
+             VALUES (:bid, :ord, :delay, :txt, NOW())",
+            [
+                ':bid' => $botId,
+                ':ord' => $newOrder,
+                ':delay' => $delayMinutes,
+                ':txt' => $messageText,
+            ]
+        );
+
+        Session::flash('success', 'Predefined message added to bot sequence.');
+        header('Location: /admin/bots');
+        exit;
+    }
+
+    /**
+     * Delete predefined bot message
+     */
+    public function deleteBotMessage(): void {
+        $this->ensureSuperAdmin();
+
+        if (!Session::verifyCsrf($_POST['csrf_token'] ?? '')) {
+            Session::flash('error', 'Invalid security token.');
+            header('Location: /admin/bots');
+            exit;
+        }
+
+        $msgId = (int)($_POST['message_id'] ?? 0);
+        Database::execute("DELETE FROM admin_bot_messages WHERE id = :id", [':id' => $msgId]);
+
+        Session::flash('success', 'Predefined message removed.');
+        header('Location: /admin/bots');
+        exit;
+    }
+
+    /**
      * Authorization Guard: Strictly Super Admin Only
      */
     private function ensureSuperAdmin(): void {

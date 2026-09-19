@@ -9,12 +9,25 @@ class RazorpayService {
     private string $keyId;
     private string $keySecret;
     private string $webhookSecret;
+    private bool $enabled;
 
     public function __construct() {
+        // Load dynamically from database settings (Admin configured)
+        $settingsRaw = Database::query("SELECT setting_key, setting_value FROM settings WHERE setting_key LIKE 'razorpay_%'");
+        $settings = [];
+        foreach ($settingsRaw as $row) {
+            $settings[$row['setting_key']] = $row['setting_value'];
+        }
+
         $config = require dirname(__DIR__, 2) . '/config/app.php';
-        $this->keyId = $config['razorpay']['key_id'] ?? '';
-        $this->keySecret = $config['razorpay']['key_secret'] ?? '';
-        $this->webhookSecret = $config['razorpay']['webhook_secret'] ?? '';
+        $this->enabled = ($settings['razorpay_enabled'] ?? '1') === '1';
+        $this->keyId = trim($settings['razorpay_key_id'] ?? ($config['razorpay']['key_id'] ?? ''));
+        $this->keySecret = trim($settings['razorpay_key_secret'] ?? ($config['razorpay']['key_secret'] ?? ''));
+        $this->webhookSecret = trim($settings['razorpay_webhook_secret'] ?? ($config['razorpay']['webhook_secret'] ?? ''));
+    }
+
+    public function isEnabled(): bool {
+        return $this->enabled;
     }
 
     public function getKeyId(): string {
@@ -25,6 +38,14 @@ class RazorpayService {
      * Create Razorpay Order via REST API
      */
     public function createOrder(int $amountPaisa, string $receipt, array $notes = []): array {
+        if (!$this->enabled) {
+            throw new Exception("Razorpay payment gateway is currently disabled by administrator. Please contact support.");
+        }
+
+        if (empty($this->keyId) || empty($this->keySecret)) {
+            throw new Exception("Razorpay payment credentials are not configured in Admin Settings. Please configure API keys.");
+        }
+
         $url = 'https://api.razorpay.com/v1/orders';
         $payload = [
             'amount' => $amountPaisa,
@@ -44,7 +65,7 @@ class RazorpayService {
                 'Content-Type: application/json',
                 'User-Agent: MilanDating-Production/1.0',
             ],
-            CURLOPT_TIMEOUT => 15,
+            CURLOPT_TIMEOUT => 20,
         ]);
 
         $response = curl_exec($ch);
@@ -53,7 +74,7 @@ class RazorpayService {
         curl_close($ch);
 
         if ($curlError) {
-            throw new Exception("Razorpay API connection error: {$curlError}");
+            throw new Exception("Razorpay connection error: {$curlError}");
         }
 
         $data = json_decode($response, true);
@@ -61,25 +82,7 @@ class RazorpayService {
             return $data;
         }
 
-        // If credentials are placeholder or invalid during initial development
-        $errorMsg = $data['error']['description'] ?? "Failed to create Razorpay order (HTTP {$httpCode}).";
-        
-        // If placeholder credentials are used in sandbox, generate a deterministic order for verification test
-        if (str_contains($this->keyId, 'test_milan') || str_contains($errorMsg, 'Authentication failed')) {
-            $fallbackOrderId = 'order_test_' . substr(md5($receipt . time()), 0, 14);
-            return [
-                'id' => $fallbackOrderId,
-                'entity' => 'order',
-                'amount' => $amountPaisa,
-                'amount_paid' => 0,
-                'amount_due' => $amountPaisa,
-                'currency' => 'INR',
-                'receipt' => $receipt,
-                'status' => 'created',
-                'is_test_mode' => true,
-            ];
-        }
-
+        $errorMsg = $data['error']['description'] ?? ($data['error']['code'] ?? "Failed to create Razorpay order (HTTP {$httpCode}).");
         throw new Exception($errorMsg);
     }
 
@@ -87,9 +90,8 @@ class RazorpayService {
      * Verify Payment Signature (SHA256 HMAC)
      */
     public function verifyPaymentSignature(string $orderId, string $paymentId, string $signature): bool {
-        // If test mode fallback was used
-        if (str_starts_with($orderId, 'order_test_') && str_starts_with($paymentId, 'pay_test_')) {
-            return true;
+        if (empty($this->keySecret) || empty($orderId) || empty($paymentId) || empty($signature)) {
+            return false;
         }
 
         $expectedSignature = hash_hmac('sha256', $orderId . '|' . $paymentId, $this->keySecret);
