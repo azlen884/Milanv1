@@ -38,7 +38,22 @@ class SubscriptionService {
             return false;
         }
 
-        // Expire any existing subscriptions
+        // Check if user has an active paid subscription with remaining days
+        $activeSub = Database::one(
+            "SELECT s.id, s.expires_at, p.code 
+             FROM subscriptions s
+             JOIN subscription_plans p ON s.plan_id = p.id
+             WHERE s.user_id = :uid AND s.status = 'active' AND s.expires_at > NOW() AND p.code != 'free'
+             ORDER BY s.expires_at DESC LIMIT 1",
+            [':uid' => $userId]
+        );
+
+        $now = time();
+        $baseTime = ($activeSub && strtotime($activeSub['expires_at']) > $now)
+            ? strtotime($activeSub['expires_at'])
+            : $now;
+
+        // Expire prior active subscription records
         Database::execute(
             "UPDATE subscriptions SET status = 'expired' WHERE user_id = :uid AND status = 'active'",
             [':uid' => $userId]
@@ -46,7 +61,7 @@ class SubscriptionService {
 
         $startsAt = date('Y-m-d H:i:s');
         $durationDays = (int)$plan['duration_days'];
-        $expiresAt = date('Y-m-d H:i:s', strtotime("+{$durationDays} days"));
+        $expiresAt = date('Y-m-d H:i:s', strtotime("+{$durationDays} days", $baseTime));
 
         Database::insert(
             "INSERT INTO subscriptions (user_id, plan_id, starts_at, expires_at, status) 
@@ -79,6 +94,9 @@ class SubscriptionService {
                 ':body' => "Welcome to {$plan['name']}! Enjoy unlimited messaging and exclusive features.",
             ]
         );
+
+        // Invalidate auth cache so changes take effect immediately
+        Auth::clearCache();
 
         return true;
     }

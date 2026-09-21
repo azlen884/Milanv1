@@ -782,6 +782,18 @@ class AdminController {
         exit;
     }
 
+    public function testRazorpay(): void {
+        $this->ensureSuperAdmin();
+        if (!Session::verifyCsrf($_POST['csrf_token'] ?? '')) {
+            \App\Helpers\View::json(['success' => false, 'error' => 'Invalid security token.'], 403);
+            return;
+        }
+
+        $rzp = new \App\Services\RazorpayService();
+        $result = $rzp->testConnection();
+        \App\Helpers\View::json($result);
+    }
+
     /**
      * Boost Management (Requirement 5)
      */
@@ -1259,9 +1271,36 @@ class AdminController {
         }
         unset($bot);
 
+        $botSystemSetting = Database::one("SELECT setting_value FROM settings WHERE setting_key = 'bot_system_enabled'");
+        $botSystemEnabled = !empty($botSystemSetting) && (string)$botSystemSetting['setting_value'] === '1';
+
+        $cronKeySetting = Database::one("SELECT setting_value FROM settings WHERE setting_key = 'cron_secret_key'");
+        $cronSecretKey = $cronKeySetting['setting_value'] ?? 'milan_cron_secret_2026';
+
+        // Fetch recent sent deliveries
+        $recentDeliveries = Database::query(
+            "SELECT bd.id, bd.sent_at, b.name as bot_name, u.email as user_email, up.name as user_name, bm.message_text
+             FROM admin_bot_deliveries bd
+             JOIN admin_bots b ON bd.bot_id = b.id
+             JOIN users u ON bd.user_id = u.id
+             LEFT JOIN user_profiles up ON u.id = up.user_id
+             JOIN admin_bot_messages bm ON bd.bot_message_id = bm.id
+             ORDER BY bd.sent_at DESC
+             LIMIT 25"
+        );
+
+        // Fetch recent cron runs
+        $recentCronLogs = Database::query(
+            "SELECT * FROM bot_cron_logs ORDER BY executed_at DESC LIMIT 10"
+        );
+
         View::renderAdmin('bots', [
             'pageTitle' => 'Admin Bots & Automated Predefined Messages',
             'bots' => $bots,
+            'botSystemEnabled' => $botSystemEnabled,
+            'cronSecretKey' => $cronSecretKey,
+            'recentDeliveries' => $recentDeliveries,
+            'recentCronLogs' => $recentCronLogs,
             'csrfToken' => Session::csrfToken(),
         ]);
     }
@@ -1552,6 +1591,93 @@ class AdminController {
         );
 
         Session::flash('success', 'Predefined message added to bot sequence.');
+        header('Location: /admin/bots');
+        exit;
+    }
+
+    /**
+     * Master Toggle for Entire Bot System (ON/OFF)
+     */
+    public function toggleBotSystem(): void {
+        $this->ensureSuperAdmin();
+
+        if (!Session::verifyCsrf($_POST['csrf_token'] ?? '')) {
+            Session::flash('error', 'Invalid security token.');
+            header('Location: /admin/bots');
+            exit;
+        }
+
+        $current = Database::one("SELECT setting_value FROM settings WHERE setting_key = 'bot_system_enabled'");
+        $currentVal = $current['setting_value'] ?? '1';
+        $newVal = ($currentVal === '1') ? '0' : '1';
+
+        Database::execute(
+            "INSERT INTO settings (setting_key, setting_value) 
+             VALUES ('bot_system_enabled', :val) 
+             ON DUPLICATE KEY UPDATE setting_value = :val2",
+            [':val' => $newVal, ':val2' => $newVal]
+        );
+
+        AdminAuth::logAudit('toggle_bot_system', 'settings', 0, "Set bot_system_enabled to {$newVal}");
+        Session::flash('success', 'Bot system master status updated to ' . ($newVal === '1' ? 'ACTIVE' : 'DISABLED') . '.');
+        header('Location: /admin/bots');
+        exit;
+    }
+
+    /**
+     * Trigger bot cron execution manually from admin panel
+     */
+    public function triggerBotCron(): void {
+        $this->ensureSuperAdmin();
+
+        if (!Session::verifyCsrf($_POST['csrf_token'] ?? '')) {
+            Session::flash('error', 'Invalid security token.');
+            header('Location: /admin/bots');
+            exit;
+        }
+
+        $result = \App\Services\BotService::runAllEligible(50);
+        AdminAuth::logAudit('trigger_bot_cron', 'bot_cron_logs', 0, "Manually triggered bot cron: sent {$result['messages_sent']} messages");
+
+        Session::flash('success', "Bot cron ran: processed {$result['users_processed']} users, sent {$result['messages_sent']} messages ({$result['duration_ms']}ms).");
+        header('Location: /admin/bots');
+        exit;
+    }
+
+    /**
+     * Update predefined bot message
+     */
+    public function updateBotMessage(): void {
+        $this->ensureSuperAdmin();
+
+        if (!Session::verifyCsrf($_POST['csrf_token'] ?? '')) {
+            Session::flash('error', 'Invalid security token.');
+            header('Location: /admin/bots');
+            exit;
+        }
+
+        $msgId = (int)($_POST['message_id'] ?? 0);
+        $delayMinutes = max(0, (int)($_POST['delay_minutes'] ?? 0));
+        $messageText = trim($_POST['message_text'] ?? '');
+
+        if ($msgId <= 0 || empty($messageText)) {
+            Session::flash('error', 'Message text cannot be empty.');
+            header('Location: /admin/bots');
+            exit;
+        }
+
+        Database::execute(
+            "UPDATE admin_bot_messages 
+             SET delay_minutes = :delay, message_text = :txt 
+             WHERE id = :id",
+            [
+                ':delay' => $delayMinutes,
+                ':txt' => $messageText,
+                ':id' => $msgId,
+            ]
+        );
+
+        Session::flash('success', 'Predefined bot message updated successfully.');
         header('Location: /admin/bots');
         exit;
     }

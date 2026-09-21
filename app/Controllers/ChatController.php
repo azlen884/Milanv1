@@ -125,66 +125,6 @@ class ChatController {
         View::json($result, $result['success'] ? 200 : 403);
     }
 
-    public function sendVoice(): void {
-        $user = Auth::user();
-        if (!$user) {
-            View::json(['success' => false, 'error' => 'Authentication required.'], 401);
-        }
-
-        $csrfToken = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
-        if (!Session::verifyCsrf($csrfToken)) {
-            View::json(['success' => false, 'error' => 'Invalid security token. Please refresh the page.'], 403);
-        }
-
-        $convId = (int)($_POST['conversation_id'] ?? 0);
-        $duration = (int)($_POST['duration_seconds'] ?? 1);
-
-        if (!isset($_FILES['audio_data'])) {
-            View::json(['success' => false, 'error' => 'No audio file uploaded.'], 400);
-        }
-
-        $file = $_FILES['audio_data'];
-        $allowedMimes = [
-            'audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav', 'audio/mpeg', 
-            'video/webm', 'audio/x-matroska', 'video/x-matroska', 'application/octet-stream', 
-            'audio/aac', 'audio/x-wav'
-        ];
-        $val = Security::validateUpload($file, $allowedMimes, 15 * 1024 * 1024);
-        if (!$val['valid']) {
-            View::json(['success' => false, 'error' => $val['error']], 400);
-        }
-
-        $uploadDir = dirname(__DIR__, 2) . '/public/uploads/voice';
-        if (!is_dir($uploadDir)) {
-            mkdir($uploadDir, 0775, true);
-        }
-
-        $ext = 'webm';
-        if (str_contains($val['mime'], 'ogg')) $ext = 'ogg';
-        elseif (str_contains($val['mime'], 'wav')) $ext = 'wav';
-        elseif (str_contains($val['mime'], 'mp4') || str_contains($val['mime'], 'aac')) $ext = 'mp4';
-
-        $filename = Security::randomFilename($ext);
-        $targetPath = $uploadDir . '/' . $filename;
-
-        $saved = false;
-        if (is_uploaded_file($file['tmp_name'])) {
-            $saved = move_uploaded_file($file['tmp_name'], $targetPath);
-        } else {
-            $saved = copy($file['tmp_name'], $targetPath);
-        }
-
-        if (!$saved) {
-            View::json(['success' => false, 'error' => 'Failed to save audio file to disk.'], 500);
-        }
-
-        $mediaUrl = '/uploads/voice/' . $filename;
-        $result = ChatService::sendVoiceMessage($user['id'], $convId, $mediaUrl, $duration);
-        $result['media_url'] = $mediaUrl;
-        $result['duration_seconds'] = max(1, $duration);
-        View::json($result, $result['success'] ? 200 : 403);
-    }
-
     public function poll(): void {
         $user = Auth::user();
         if (!$user) {

@@ -99,7 +99,13 @@ $webhookUrl = "{$protocol}://{$host}/api/razorpay/webhook";
                     <p class="text-[11px] text-slate-400 mt-1">Used to verify HMAC SHA256 signatures of webhook events.</p>
                 </div>
 
-                <div class="pt-4 border-t border-slate-100 flex items-center justify-end">
+                <div id="testConnResult" class="hidden p-3 rounded-xl text-xs font-medium"></div>
+
+                <div class="pt-4 border-t border-slate-100 flex items-center justify-between">
+                    <button type="button" id="testConnBtn" onclick="testRazorpayConnection()" class="px-4 py-2.5 rounded-xl border border-slate-300 hover:bg-slate-50 text-slate-700 font-bold text-xs shadow-xs transition-colors flex items-center gap-2">
+                        <i data-lucide="activity" class="w-4 h-4 text-slate-500"></i>
+                        <span id="testConnText">Test API Connection</span>
+                    </button>
                     <button type="submit" class="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-xs transition-colors flex items-center gap-2">
                         <i data-lucide="save" class="w-4 h-4"></i>
                         <span>Save Razorpay Configuration</span>
@@ -201,6 +207,60 @@ $webhookUrl = "{$protocol}://{$host}/api/razorpay/webhook";
         const input = document.getElementById('webhookUrlInput');
         input.select();
         navigator.clipboard.writeText(input.value);
-        alert('Webhook endpoint URL copied to clipboard.');
+        if (typeof showToast === 'function') {
+            showToast('Webhook endpoint URL copied to clipboard.', 'info');
+        } else {
+            alert('Webhook endpoint URL copied to clipboard.');
+        }
+    }
+
+    async function testRazorpayConnection() {
+        const btn = document.getElementById('testConnBtn');
+        const text = document.getElementById('testConnText');
+        const resultDiv = document.getElementById('testConnResult');
+
+        btn.disabled = true;
+        btn.classList.add('opacity-75');
+        text.textContent = 'Testing Connection...';
+        resultDiv.classList.add('hidden');
+        resultDiv.className = 'hidden p-3 rounded-xl text-xs font-medium';
+
+        try {
+            const formData = new FormData();
+            const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+            const csrf = csrfMeta ? csrfMeta.getAttribute('content') : '<?= \App\Helpers\Session::getCsrfToken() ?>';
+            formData.append('csrf_token', csrf);
+
+            const res = await fetch('/admin/razorpay/test', {
+                method: 'POST',
+                body: formData,
+                headers: {
+                    'X-CSRF-TOKEN': csrf,
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                }
+            });
+
+            const data = await res.json();
+            resultDiv.classList.remove('hidden');
+
+            if (data.success) {
+                resultDiv.className = 'p-3 rounded-xl text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200 flex items-center gap-2';
+                resultDiv.innerHTML = '<i data-lucide="check-circle" class="w-4 h-4 text-emerald-600 shrink-0"></i> <span>' + (data.message || 'Connection successful! API credentials valid.') + '</span>';
+            } else {
+                resultDiv.className = 'p-3 rounded-xl text-xs font-medium bg-rose-50 text-rose-800 border border-rose-200 flex items-center gap-2';
+                resultDiv.innerHTML = '<i data-lucide="alert-circle" class="w-4 h-4 text-rose-600 shrink-0"></i> <span>' + (data.error || 'Connection failed.') + '</span>';
+            }
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+        } catch (err) {
+            resultDiv.classList.remove('hidden');
+            resultDiv.className = 'p-3 rounded-xl text-xs font-medium bg-rose-50 text-rose-800 border border-rose-200 flex items-center gap-2';
+            resultDiv.innerHTML = '<i data-lucide="alert-circle" class="w-4 h-4 text-rose-600 shrink-0"></i> <span>Network error while testing connection.</span>';
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+        } finally {
+            btn.disabled = false;
+            btn.classList.remove('opacity-75');
+            text.textContent = 'Test API Connection';
+        }
     }
 </script>

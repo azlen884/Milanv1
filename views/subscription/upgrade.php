@@ -194,7 +194,20 @@
             const rzp1 = new Razorpay(options);
             rzp1.on('payment.failed', function (resp) {
                 resetButton(planId, originalText);
-                showToast(resp.error?.description || 'Payment was declined by your bank or gateway.', 'error');
+                const desc = resp.error?.description || 'Payment was declined by your bank or gateway.';
+                showToast(desc, 'error');
+
+                // Asynchronously mark failure in backend
+                const failForm = new FormData();
+                failForm.append('razorpay_order_id', resp.error?.metadata?.order_id || data.order.id || '');
+                failForm.append('razorpay_payment_id', resp.error?.metadata?.payment_id || '');
+                failForm.append('reason', desc);
+                failForm.append('csrf_token', getCsrfToken());
+                fetch('/api/subscription/record-failure', {
+                    method: 'POST',
+                    body: failForm,
+                    headers: { 'X-CSRF-TOKEN': getCsrfToken() }
+                }).catch(() => {});
             });
             rzp1.open();
 

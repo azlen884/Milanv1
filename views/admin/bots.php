@@ -2,16 +2,92 @@
 // views/admin/bots.php
 ?>
 <div class="space-y-6">
-    <!-- Header -->
-    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <!-- Header & Master System Controls -->
+    <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
         <div>
-            <h1 class="text-2xl font-bold text-slate-900">Admin Controlled Bots</h1>
+            <div class="flex items-center gap-3">
+                <h1 class="text-2xl font-bold text-slate-900">Admin Controlled Bots</h1>
+                <?php if ($botSystemEnabled): ?>
+                    <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                        Bot System Active
+                    </span>
+                <?php else: ?>
+                    <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+                        <span class="w-2 h-2 rounded-full bg-rose-500"></span>
+                        Bot System Disabled
+                    </span>
+                <?php endif; ?>
+            </div>
             <p class="text-sm text-slate-500 mt-1">Manage automated companion profiles, predefined message sequences, and timed delivery to free users.</p>
         </div>
-        <button onclick="document.getElementById('create-bot-modal').classList.remove('hidden')" class="inline-flex items-center gap-2 px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold rounded-xl shadow-xs transition-colors">
-            <i data-lucide="plus" class="w-4 h-4"></i>
-            <span>Create New Bot</span>
-        </button>
+
+        <div class="flex flex-wrap items-center gap-2.5">
+            <!-- Master ON/OFF Switch -->
+            <form action="/admin/bots/system-toggle" method="POST" class="inline">
+                <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                <button type="submit" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors shadow-xs <?= $botSystemEnabled ? 'bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300' : 'bg-emerald-600 hover:bg-emerald-700 text-white' ?>">
+                    <i data-lucide="<?= $botSystemEnabled ? 'power-off' : 'power' ?>" class="w-4 h-4"></i>
+                    <span><?= $botSystemEnabled ? 'Turn System OFF' : 'Turn System ON' ?></span>
+                </button>
+            </form>
+
+            <!-- Trigger Cron Now -->
+            <form action="/admin/bots/cron-trigger" method="POST" class="inline">
+                <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                <button type="submit" class="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold rounded-xl shadow-xs transition-colors" title="Run bot message dispatcher immediately">
+                    <i data-lucide="play" class="w-4 h-4"></i>
+                    <span>Run Cron Now</span>
+                </button>
+            </form>
+
+            <!-- Create Bot Button -->
+            <button onclick="document.getElementById('create-bot-modal').classList.remove('hidden')" class="inline-flex items-center gap-2 px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold rounded-xl shadow-xs transition-colors">
+                <i data-lucide="plus" class="w-4 h-4"></i>
+                <span>Create New Bot</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Cron Setup & Documentation Card -->
+    <div class="bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white rounded-2xl p-5 border border-slate-700 shadow-md space-y-4">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2.5">
+                <div class="w-8 h-8 rounded-lg bg-rose-500/20 text-rose-400 flex items-center justify-center">
+                    <i data-lucide="clock" class="w-4 h-4"></i>
+                </div>
+                <h3 class="text-sm font-bold text-white">Cron Job Setup & Automation Endpoints</h3>
+            </div>
+            <span class="text-xs text-slate-400 font-mono">Recommended: Run Every 1 to 5 Minutes</span>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+            <!-- Server / cPanel CLI Command -->
+            <div class="bg-slate-950/70 p-3.5 rounded-xl border border-slate-800 space-y-2">
+                <div class="flex items-center justify-between">
+                    <span class="text-xs font-semibold text-slate-300">1. Server Crontab / cPanel Command</span>
+                    <button onclick="copyToClipboard('cron-cli-cmd')" class="text-xs text-rose-400 hover:text-rose-300 transition-colors flex items-center gap-1">
+                        <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                        <span>Copy</span>
+                    </button>
+                </div>
+                <code id="cron-cli-cmd" class="block text-xs font-mono text-emerald-400 bg-slate-900 p-2.5 rounded-lg border border-slate-800 select-all overflow-x-auto break-all">* * * * * php <?= htmlspecialchars(dirname(dirname(__DIR__))) ?>/cron.php >> <?= htmlspecialchars(dirname(dirname(__DIR__))) ?>/storage/bot.log 2>&1</code>
+                <p class="text-[11px] text-slate-400">Add this single line to your server or cPanel crontab. It dispatches due bot messages to eligible free users.</p>
+            </div>
+
+            <!-- Secure Web URL Endpoint -->
+            <div class="bg-slate-950/70 p-3.5 rounded-xl border border-slate-800 space-y-2">
+                <div class="flex items-center justify-between">
+                    <span class="text-xs font-semibold text-slate-300">2. Secure HTTP Webhook URL</span>
+                    <button onclick="copyToClipboard('cron-url-cmd')" class="text-xs text-rose-400 hover:text-rose-300 transition-colors flex items-center gap-1">
+                        <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                        <span>Copy</span>
+                    </button>
+                </div>
+                <code id="cron-url-cmd" class="block text-xs font-mono text-cyan-400 bg-slate-900 p-2.5 rounded-lg border border-slate-800 select-all overflow-x-auto break-all"><?= (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http") . "://" . ($_SERVER['HTTP_HOST'] ?? 'localhost:3000') ?>/cron?key=<?= htmlspecialchars($cronSecretKey) ?></code>
+                <p class="text-[11px] text-slate-400">Trigger via external monitoring (e.g. Cron-job.org, EasyCron, curl) with authorization token.</p>
+            </div>
+        </div>
     </div>
 
     <!-- Paid Subscriber Guarantee Banner -->
@@ -20,132 +96,288 @@
             <i data-lucide="shield-check" class="w-5 h-5"></i>
         </div>
         <div>
-            <h4 class="text-sm font-bold text-emerald-900">Automatic Subscription Stop Guard Enabled</h4>
+            <h4 class="text-sm font-bold text-emerald-900">Automatic Subscription Stop Guard (Active)</h4>
             <p class="text-xs text-emerald-700 mt-0.5 leading-relaxed">
-                When a user upgrades to any paid subscription (Monthly or 3 Months), the system strictly and permanently halts all automated bot messages for that user. Bot messages are only delivered to free tier accounts.
+                When a user upgrades to any paid subscription (Monthly, Quarterly, or Annual), the system strictly and permanently halts all automated bot messages for that user. Bot messages are only delivered to free tier accounts.
             </p>
         </div>
     </div>
 
-    <!-- Bots List -->
-    <?php if (empty($bots)): ?>
-        <div class="bg-white rounded-2xl border border-slate-200 p-12 text-center">
-            <div class="w-16 h-16 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto mb-4">
-                <i data-lucide="bot" class="w-8 h-8"></i>
-            </div>
-            <h3 class="text-base font-bold text-slate-900">No Admin Bots Created Yet</h3>
-            <p class="text-xs text-slate-500 max-w-md mx-auto mt-1 mb-6">Create realistic bot profiles with predefined messages to greet new users and demonstrate the chat experience.</p>
-            <button onclick="document.getElementById('create-bot-modal').classList.remove('hidden')" class="inline-flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold rounded-xl transition-colors">
-                <i data-lucide="plus" class="w-4 h-4"></i>
-                <span>Create Your First Bot</span>
-            </button>
+    <!-- Bots Grid -->
+    <div>
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-bold text-slate-900">Configured Companion Bots (<?= count($bots) ?>)</h2>
         </div>
-    <?php else: ?>
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <?php foreach ($bots as $bot): ?>
-                <div class="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden flex flex-col">
-                    <!-- Bot Header Card -->
-                    <div class="p-5 border-b border-slate-100 flex items-start justify-between gap-4">
-                        <div class="flex items-center gap-3.5">
-                            <img src="<?= htmlspecialchars($bot['avatar_url']) ?>" alt="<?= htmlspecialchars($bot['name']) ?>" class="w-14 h-14 rounded-2xl object-cover ring-2 ring-slate-100 shrink-0" onerror="this.src='/uploads/profiles/default_female.jpg'">
+
+        <?php if (empty($bots)): ?>
+            <div class="bg-white rounded-2xl border border-slate-200 p-12 text-center">
+                <div class="w-16 h-16 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto mb-4">
+                    <i data-lucide="bot" class="w-8 h-8"></i>
+                </div>
+                <h3 class="text-base font-bold text-slate-900">No Admin Bots Created Yet</h3>
+                <p class="text-xs text-slate-500 max-w-md mx-auto mt-1 mb-6">Create realistic companion profiles with predefined messages to greet new users and demonstrate active engagement.</p>
+                <button onclick="document.getElementById('create-bot-modal').classList.remove('hidden')" class="inline-flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold rounded-xl transition-colors">
+                    <i data-lucide="plus" class="w-4 h-4"></i>
+                    <span>Create Your First Bot</span>
+                </button>
+            </div>
+        <?php else: ?>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <?php foreach ($bots as $bot): ?>
+                    <div class="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden flex flex-col">
+                        <!-- Bot Header Card -->
+                        <div class="p-5 border-b border-slate-100 flex items-start justify-between gap-4">
+                            <div class="flex items-center gap-3.5">
+                                <img src="<?= htmlspecialchars($bot['avatar_url']) ?>" alt="<?= htmlspecialchars($bot['name']) ?>" class="w-14 h-14 rounded-2xl object-cover ring-2 ring-slate-100 shrink-0" onerror="this.src='/uploads/profiles/default_female.jpg'">
+                                <div>
+                                    <div class="flex items-center gap-2">
+                                        <h3 class="text-base font-bold text-slate-900"><?= htmlspecialchars($bot['name']) ?></h3>
+                                        <span class="text-xs text-slate-500"><?= (int)$bot['age'] ?> • <?= ucfirst(htmlspecialchars($bot['gender'])) ?></span>
+                                        <?php if ($bot['is_active']): ?>
+                                            <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">Active</span>
+                                        <?php else: ?>
+                                            <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200">Paused</span>
+                                        <?php endif; ?>
+                                    </div>
+                                    <div class="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5">
+                                        <i data-lucide="map-pin" class="w-3.5 h-3.5 text-slate-400"></i>
+                                        <span><?= htmlspecialchars($bot['city']) ?></span>
+                                        <span>•</span>
+                                        <span><?= count($bot['messages']) ?> messages</span>
+                                        <span>•</span>
+                                        <span class="text-rose-600 font-medium"><?= (int)$bot['sent_count'] ?> sent</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Actions -->
+                            <div class="flex items-center gap-1.5 shrink-0">
+                                <!-- Toggle Active -->
+                                <form action="/admin/bots/toggle" method="POST" class="inline">
+                                    <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                                    <input type="hidden" name="bot_id" value="<?= $bot['id'] ?>">
+                                    <button type="submit" class="p-2 rounded-xl text-slate-600 hover:bg-slate-100 transition-colors" title="<?= $bot['is_active'] ? 'Pause Bot' : 'Activate Bot' ?>">
+                                        <i data-lucide="<?= $bot['is_active'] ? 'pause' : 'play' ?>" class="w-4 h-4 <?= $bot['is_active'] ? 'text-amber-600' : 'text-emerald-600' ?>"></i>
+                                    </button>
+                                </form>
+                                <!-- Delete Bot -->
+                                <form action="/admin/bots/delete" method="POST" class="inline" onsubmit="return confirm('Are you sure you want to delete this bot and its conversations?');">
+                                    <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                                    <input type="hidden" name="bot_id" value="<?= $bot['id'] ?>">
+                                    <button type="submit" class="p-2 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors" title="Delete Bot">
+                                        <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!-- Bio -->
+                        <div class="px-5 py-3 bg-slate-50/50 border-b border-slate-100 text-xs text-slate-600 italic">
+                            "<?= htmlspecialchars($bot['bio']) ?>"
+                        </div>
+
+                        <!-- Predefined Message Sequence -->
+                        <div class="p-5 flex-1 flex flex-col justify-between">
                             <div>
-                                <div class="flex items-center gap-2">
-                                    <h3 class="text-base font-bold text-slate-900"><?= htmlspecialchars($bot['name']) ?></h3>
-                                    <span class="text-xs text-slate-500"><?= (int)$bot['age'] ?> • <?= ucfirst(htmlspecialchars($bot['gender'])) ?></span>
-                                    <?php if ($bot['is_active']): ?>
-                                        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">Active</span>
+                                <div class="flex items-center justify-between mb-3">
+                                    <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400">Message Sequence</h4>
+                                    <span class="text-[11px] text-slate-400">Delivered sequentially after user registration</span>
+                                </div>
+
+                                <div class="space-y-2 mb-4">
+                                    <?php if (empty($bot['messages'])): ?>
+                                        <p class="text-xs text-slate-400 italic py-2">No messages in sequence yet. Add one below.</p>
                                     <?php else: ?>
-                                        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200">Paused</span>
-                                    <?php endif; ?>
-                                </div>
-                                <div class="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5">
-                                    <i data-lucide="map-pin" class="w-3.5 h-3.5 text-slate-400"></i>
-                                    <span><?= htmlspecialchars($bot['city']) ?></span>
-                                    <span>•</span>
-                                    <span><?= count($bot['messages']) ?> predefined messages</span>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Actions -->
-                        <div class="flex items-center gap-1.5 shrink-0">
-                            <!-- Toggle Active -->
-                            <form action="/admin/bots/toggle" method="POST" class="inline">
-                                <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
-                                <input type="hidden" name="bot_id" value="<?= $bot['id'] ?>">
-                                <button type="submit" class="p-2 rounded-xl text-slate-600 hover:bg-slate-100 transition-colors" title="<?= $bot['is_active'] ? 'Pause Bot' : 'Activate Bot' ?>">
-                                    <i data-lucide="<?= $bot['is_active'] ? 'pause' : 'play' ?>" class="w-4 h-4 <?= $bot['is_active'] ? 'text-amber-600' : 'text-emerald-600' ?>"></i>
-                                </button>
-                            </form>
-                            <!-- Delete Bot -->
-                            <form action="/admin/bots/delete" method="POST" class="inline" onsubmit="return confirm('Are you sure you want to delete this bot and its conversations?');">
-                                <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
-                                <input type="hidden" name="bot_id" value="<?= $bot['id'] ?>">
-                                <button type="submit" class="p-2 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors" title="Delete Bot">
-                                    <i data-lucide="trash-2" class="w-4 h-4"></i>
-                                </button>
-                            </form>
-                        </div>
-                    </div>
-
-                    <!-- Bio -->
-                    <div class="px-5 py-3 bg-slate-50/50 border-b border-slate-100 text-xs text-slate-600 italic">
-                        "<?= htmlspecialchars($bot['bio']) ?>"
-                    </div>
-
-                    <!-- Predefined Message Sequence -->
-                    <div class="p-5 flex-1 flex flex-col justify-between">
-                        <div>
-                            <div class="flex items-center justify-between mb-3">
-                                <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400">Message Sequence</h4>
-                                <span class="text-[11px] text-slate-400">Delivered sequentially by delay</span>
-                            </div>
-
-                            <div class="space-y-2 mb-4">
-                                <?php if (empty($bot['messages'])): ?>
-                                    <p class="text-xs text-slate-400 italic py-2">No messages in sequence yet. Add one below.</p>
-                                <?php else: ?>
-                                    <?php foreach ($bot['messages'] as $idx => $msg): ?>
-                                        <div class="flex items-start justify-between gap-3 p-3 bg-slate-50 border border-slate-100 rounded-xl text-xs">
-                                            <div class="flex items-start gap-2.5">
-                                                <span class="w-5 h-5 rounded-lg bg-rose-100 text-rose-700 font-bold text-[10px] flex items-center justify-center shrink-0 mt-0.5"><?= $idx + 1 ?></span>
-                                                <div>
-                                                    <p class="text-slate-800 font-medium leading-relaxed"><?= htmlspecialchars($msg['message_text']) ?></p>
-                                                    <span class="text-[10px] font-semibold text-slate-400 mt-1 inline-block">
-                                                        Delay: <?= (int)$msg['delay_minutes'] ?> min after registration
-                                                    </span>
+                                        <?php foreach ($bot['messages'] as $idx => $msg): ?>
+                                            <div class="flex items-start justify-between gap-3 p-3 bg-slate-50 border border-slate-100 rounded-xl text-xs group hover:bg-slate-100/70 transition-colors">
+                                                <div class="flex items-start gap-2.5">
+                                                    <span class="w-5 h-5 rounded-lg bg-rose-100 text-rose-700 font-bold text-[10px] flex items-center justify-center shrink-0 mt-0.5"><?= $idx + 1 ?></span>
+                                                    <div>
+                                                        <p class="text-slate-800 font-medium leading-relaxed" id="msg-text-<?= $msg['id'] ?>"><?= htmlspecialchars($msg['message_text']) ?></p>
+                                                        <span class="text-[10px] font-semibold text-slate-400 mt-1 inline-block" id="msg-delay-<?= $msg['id'] ?>" data-delay="<?= (int)$msg['delay_minutes'] ?>">
+                                                            Delay: <?= (int)$msg['delay_minutes'] ?> min after registration
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                <div class="flex items-center gap-1 shrink-0">
+                                                    <!-- Edit Message Button -->
+                                                    <button type="button" onclick="openEditMessageModal(<?= $msg['id'] ?>, <?= (int)$msg['delay_minutes'] ?>, <?= htmlspecialchars(json_encode($msg['message_text'])) ?>)" class="text-slate-400 hover:text-blue-600 p-1 rounded transition-colors" title="Edit Message">
+                                                        <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+                                                    </button>
+                                                    <!-- Delete Message -->
+                                                    <form action="/admin/bots/message/delete" method="POST" class="inline" onsubmit="return confirm('Delete this message?');">
+                                                        <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                                                        <input type="hidden" name="message_id" value="<?= $msg['id'] ?>">
+                                                        <button type="submit" class="text-slate-400 hover:text-rose-600 p-1 rounded transition-colors" title="Delete Message">
+                                                            <i data-lucide="x" class="w-3.5 h-3.5"></i>
+                                                        </button>
+                                                    </form>
                                                 </div>
                                             </div>
-                                            <form action="/admin/bots/message/delete" method="POST" class="shrink-0" onsubmit="return confirm('Delete this message?');">
-                                                <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
-                                                <input type="hidden" name="message_id" value="<?= $msg['id'] ?>">
-                                                <button type="submit" class="text-slate-400 hover:text-rose-600 p-1">
-                                                    <i data-lucide="x" class="w-3.5 h-3.5"></i>
-                                                </button>
-                                            </form>
-                                        </div>
-                                    <?php endforeach; ?>
-                                <?php endif; ?>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
+                                </div>
                             </div>
-                        </div>
 
-                        <!-- Add Message Form -->
-                        <form action="/admin/bots/message/add" method="POST" class="pt-3 border-t border-slate-100">
-                            <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
-                            <input type="hidden" name="bot_id" value="<?= $bot['id'] ?>">
-                            <div class="flex items-center gap-2">
-                                <input type="number" name="delay_minutes" min="0" max="1440" value="5" placeholder="Min" class="w-20 px-3 py-2 text-xs border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" title="Delay in minutes after user registers">
-                                <input type="text" name="message_text" required placeholder="Type predefined reply message..." class="flex-1 px-3 py-2 text-xs border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none">
-                                <button type="submit" class="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl shrink-0 transition-colors">
-                                    Add
-                                </button>
-                            </div>
-                        </form>
+                            <!-- Add Message Form -->
+                            <form action="/admin/bots/message/add" method="POST" class="pt-3 border-t border-slate-100">
+                                <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+                                <input type="hidden" name="bot_id" value="<?= $bot['id'] ?>">
+                                <div class="flex items-center gap-2">
+                                    <input type="number" name="delay_minutes" min="0" max="1440" value="5" placeholder="Min" class="w-20 px-3 py-2 text-xs border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none" title="Delay in minutes after user registers">
+                                    <input type="text" name="message_text" required placeholder="Type predefined reply message..." class="flex-1 px-3 py-2 text-xs border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none">
+                                    <button type="submit" class="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl shrink-0 transition-colors">
+                                        Add
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
                     </div>
-                </div>
-            <?php endforeach; ?>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+    </div>
+
+    <!-- Scheduled & Sent Deliveries Log -->
+    <div class="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+        <div class="p-5 border-b border-slate-100 flex items-center justify-between">
+            <div>
+                <h3 class="text-base font-bold text-slate-900">Delivered Bot Messages Log</h3>
+                <p class="text-xs text-slate-500 mt-0.5">Real record of automated messages sent from bots to registered users</p>
+            </div>
+            <span class="text-xs font-semibold text-slate-400">Showing last <?= count($recentDeliveries) ?> entries</span>
         </div>
-    <?php endif; ?>
+
+        <?php if (empty($recentDeliveries)): ?>
+            <div class="p-8 text-center text-xs text-slate-400">
+                No automated bot messages have been delivered yet. Once new free users register and cron runs, delivery records will appear here.
+            </div>
+        <?php else: ?>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-xs text-slate-600">
+                    <thead class="bg-slate-50 text-slate-500 uppercase tracking-wider font-semibold border-b border-slate-100 text-[11px]">
+                        <tr>
+                            <th class="px-5 py-3">Bot Name</th>
+                            <th class="px-5 py-3">Delivered To User</th>
+                            <th class="px-5 py-3">Message Text</th>
+                            <th class="px-5 py-3 text-right">Sent Time</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        <?php foreach ($recentDeliveries as $del): ?>
+                            <tr class="hover:bg-slate-50/50 transition-colors">
+                                <td class="px-5 py-3 font-semibold text-slate-800 flex items-center gap-1.5">
+                                    <span class="w-2 h-2 rounded-full bg-rose-500"></span>
+                                    <?= htmlspecialchars($del['bot_name']) ?>
+                                </td>
+                                <td class="px-5 py-3">
+                                    <span class="font-medium text-slate-900"><?= htmlspecialchars($del['user_name'] ?? 'User') ?></span>
+                                    <span class="text-slate-400 text-[11px] block"><?= htmlspecialchars($del['user_email']) ?></span>
+                                </td>
+                                <td class="px-5 py-3 text-slate-700 max-w-md truncate">
+                                    "<?= htmlspecialchars($del['message_text']) ?>"
+                                </td>
+                                <td class="px-5 py-3 text-right text-slate-400 whitespace-nowrap">
+                                    <?= htmlspecialchars($del['sent_at']) ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
+    </div>
+
+    <!-- Cron Execution Logs Table -->
+    <div class="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+        <div class="p-5 border-b border-slate-100 flex items-center justify-between">
+            <div>
+                <h3 class="text-base font-bold text-slate-900">Cron Runner Execution History</h3>
+                <p class="text-xs text-slate-500 mt-0.5">Execution logs captured from CLI and HTTP cron executions</p>
+            </div>
+            <span class="text-xs font-semibold text-slate-400">Last <?= count($recentCronLogs) ?> executions</span>
+        </div>
+
+        <?php if (empty($recentCronLogs)): ?>
+            <div class="p-8 text-center text-xs text-slate-400">
+                No cron runs logged yet. Execute <code>php cron.php</code> or click "Run Cron Now" above.
+            </div>
+        <?php else: ?>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-xs text-slate-600">
+                    <thead class="bg-slate-50 text-slate-500 uppercase tracking-wider font-semibold border-b border-slate-100 text-[11px]">
+                        <tr>
+                            <th class="px-5 py-3">Status</th>
+                            <th class="px-5 py-3">Users Processed</th>
+                            <th class="px-5 py-3">Messages Sent</th>
+                            <th class="px-5 py-3">Duration</th>
+                            <th class="px-5 py-3">Log Output</th>
+                            <th class="px-5 py-3 text-right">Executed At</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        <?php foreach ($recentCronLogs as $log): ?>
+                            <tr class="hover:bg-slate-50/50 transition-colors">
+                                <td class="px-5 py-3">
+                                    <?php if ($log['status'] === 'success'): ?>
+                                        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">Success</span>
+                                    <?php elseif ($log['status'] === 'disabled'): ?>
+                                        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">Disabled</span>
+                                    <?php else: ?>
+                                        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200"><?= htmlspecialchars($log['status']) ?></span>
+                                    <?php endif; ?>
+                                </td>
+                                <td class="px-5 py-3 font-semibold text-slate-800"><?= (int)$log['users_processed'] ?></td>
+                                <td class="px-5 py-3 font-semibold text-rose-600"><?= (int)$log['messages_sent'] ?></td>
+                                <td class="px-5 py-3 text-slate-500"><?= (int)$log['duration_ms'] ?> ms</td>
+                                <td class="px-5 py-3 text-slate-600 font-mono text-[11px]"><?= htmlspecialchars($log['log_output'] ?? '') ?></td>
+                                <td class="px-5 py-3 text-right text-slate-400 whitespace-nowrap"><?= htmlspecialchars($log['executed_at']) ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
+    </div>
+</div>
+
+<!-- Edit Message Modal -->
+<div id="edit-message-modal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-xs z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-100">
+        <div class="flex items-center justify-between pb-4 border-b border-slate-100">
+            <h3 class="text-base font-bold text-slate-900 flex items-center gap-2">
+                <i data-lucide="edit" class="w-4 h-4 text-rose-600"></i>
+                <span>Edit Bot Message</span>
+            </h3>
+            <button onclick="document.getElementById('edit-message-modal').classList.add('hidden')" class="p-1 rounded-lg text-slate-400 hover:text-slate-600">
+                <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+        </div>
+
+        <form action="/admin/bots/message/update" method="POST" class="space-y-4 pt-4">
+            <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
+            <input type="hidden" name="message_id" id="edit-msg-id" value="">
+
+            <div>
+                <label class="block text-xs font-semibold text-slate-700 mb-1">Delay (Minutes after user registration)</label>
+                <input type="number" name="delay_minutes" id="edit-msg-delay" min="0" max="1440" required class="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none">
+            </div>
+
+            <div>
+                <label class="block text-xs font-semibold text-slate-700 mb-1">Message Text</label>
+                <textarea name="message_text" id="edit-msg-text" rows="3" required class="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none"></textarea>
+            </div>
+
+            <div class="pt-3 flex items-center justify-end gap-3 border-t border-slate-100">
+                <button type="button" onclick="document.getElementById('edit-message-modal').classList.add('hidden')" class="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors">
+                    Cancel
+                </button>
+                <button type="submit" class="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold rounded-xl transition-colors">
+                    Save Changes
+                </button>
+            </div>
+        </form>
+    </div>
 </div>
 
 <!-- Create Bot Modal -->
@@ -225,6 +457,25 @@
 </div>
 
 <script>
+function copyToClipboard(elementId) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    navigator.clipboard.writeText(el.innerText || el.textContent).then(() => {
+        alert('Copied to clipboard!');
+    }).catch(err => {
+        console.error('Could not copy text: ', err);
+    });
+}
+
+function openEditMessageModal(msgId, delay, text) {
+    const modal = document.getElementById('edit-message-modal');
+    if (!modal) return;
+    document.getElementById('edit-msg-id').value = msgId;
+    document.getElementById('edit-msg-delay').value = delay;
+    document.getElementById('edit-msg-text').value = text;
+    modal.classList.remove('hidden');
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     const form = document.getElementById('create-bot-form');
     if (!form) return;

@@ -123,11 +123,10 @@ class SettingsController {
             View::json(['success' => false, 'error' => 'Security token expired. Please refresh the page.'], 403);
         }
 
-        if (!isset($_FILES['photo']) || !is_array($_FILES['photo'])) {
+        $file = $_FILES['photo'] ?? $_FILES['image'] ?? $_FILES['file'] ?? null;
+        if (!$file || !is_array($file)) {
             View::json(['success' => false, 'error' => 'No photo file was provided in the upload request.'], 400);
         }
-
-        $file = $_FILES['photo'];
         if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
             $errMap = [
                 UPLOAD_ERR_INI_SIZE => 'Photo file exceeds server upload size limit.',

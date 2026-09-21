@@ -10,6 +10,7 @@ class RazorpayService {
     private string $keySecret;
     private string $webhookSecret;
     private bool $enabled;
+    private string $mode;
 
     public function __construct() {
         // Load dynamically from database settings (Admin configured)
@@ -20,18 +21,39 @@ class RazorpayService {
         }
 
         $config = require dirname(__DIR__, 2) . '/config/app.php';
-        $this->enabled = ($settings['razorpay_enabled'] ?? '1') === '1';
-        $this->keyId = trim($settings['razorpay_key_id'] ?? ($config['razorpay']['key_id'] ?? ''));
-        $this->keySecret = trim($settings['razorpay_key_secret'] ?? ($config['razorpay']['key_secret'] ?? ''));
-        $this->webhookSecret = trim($settings['razorpay_webhook_secret'] ?? ($config['razorpay']['webhook_secret'] ?? ''));
+
+        $dbEnabled = $settings['razorpay_enabled'] ?? null;
+        $this->enabled = ($dbEnabled !== null) ? ($dbEnabled === '1') : true;
+        $this->mode = $settings['razorpay_mode'] ?? 'test';
+
+        // Check DB first, fall back to environment/config if empty
+        $dbKeyId = trim($settings['razorpay_key_id'] ?? '');
+        $dbKeySecret = trim($settings['razorpay_key_secret'] ?? '');
+        $dbWebhookSecret = trim($settings['razorpay_webhook_secret'] ?? '');
+
+        $envKeyId = trim(env('RAZORPAY_KEY_ID', '') ?: ($config['razorpay']['key_id'] ?? ''));
+        $envKeySecret = trim(env('RAZORPAY_KEY_SECRET', '') ?: ($config['razorpay']['key_secret'] ?? ''));
+        $envWebhookSecret = trim(env('RAZORPAY_WEBHOOK_SECRET', '') ?: ($config['razorpay']['webhook_secret'] ?? ''));
+
+        $this->keyId = $dbKeyId !== '' ? $dbKeyId : $envKeyId;
+        $this->keySecret = $dbKeySecret !== '' ? $dbKeySecret : $envKeySecret;
+        $this->webhookSecret = $dbWebhookSecret !== '' ? $dbWebhookSecret : $envWebhookSecret;
     }
 
     public function isEnabled(): bool {
         return $this->enabled;
     }
 
+    public function getMode(): string {
+        return $this->mode;
+    }
+
     public function getKeyId(): string {
         return $this->keyId;
+    }
+
+    public function hasCredentials(): bool {
+        return !empty($this->keyId) && !empty($this->keySecret);
     }
 
     /**
@@ -43,8 +65,15 @@ class RazorpayService {
         }
 
         if (empty($this->keyId) || empty($this->keySecret)) {
-            throw new Exception("Razorpay payment credentials are not configured in Admin Settings. Please configure API keys.");
+            throw new Exception("Razorpay payment credentials are not configured. Please configure your Key ID and Key Secret in Admin Settings.");
         }
+
+        if ($amountPaisa <= 0) {
+            throw new Exception("Invalid order amount: {$amountPaisa} paise. Amount must be greater than zero.");
+        }
+
+        // Razorpay enforces a maximum 40-character receipt length
+        $receipt = substr($receipt, 0, 40);
 
         $url = 'https://api.razorpay.com/v1/orders';
         $payload = [
@@ -66,6 +95,7 @@ class RazorpayService {
                 'User-Agent: MilanDating-Production/1.0',
             ],
             CURLOPT_TIMEOUT => 20,
+            CURLOPT_CONNECTTIMEOUT => 10,
         ]);
 
         $response = curl_exec($ch);
@@ -74,7 +104,8 @@ class RazorpayService {
         curl_close($ch);
 
         if ($curlError) {
-            throw new Exception("Razorpay connection error: {$curlError}");
+            error_log("[Razorpay] Order creation cURL error: " . $curlError);
+            throw new Exception("Razorpay gateway connection error: {$curlError}. Please verify your network connection.");
         }
 
         $data = json_decode($response, true);
@@ -82,12 +113,19 @@ class RazorpayService {
             return $data;
         }
 
-        $errorMsg = $data['error']['description'] ?? ($data['error']['code'] ?? "Failed to create Razorpay order (HTTP {$httpCode}).");
-        throw new Exception($errorMsg);
+        if ($httpCode === 401) {
+            error_log("[Razorpay] Authentication failed for Key ID: " . substr($this->keyId, 0, 8) . "...");
+            throw new Exception("Razorpay authentication failed. The configured Key ID or Key Secret is invalid or inactive. Please update your API credentials in Admin Settings.");
+        }
+
+        $errorDesc = $data['error']['description'] ?? ($data['error']['code'] ?? "Failed to create Razorpay order (HTTP {$httpCode}).");
+        error_log("[Razorpay] Order creation failed (HTTP {$httpCode}): " . $errorDesc);
+        throw new Exception("Razorpay error: " . $errorDesc);
     }
 
     /**
      * Verify Payment Signature (SHA256 HMAC)
+     * Must strictly compute HMAC SHA256 of ($orderId . '|' . $paymentId) using Razorpay Key Secret
      */
     public function verifyPaymentSignature(string $orderId, string $paymentId, string $signature): bool {
         if (empty($this->keySecret) || empty($orderId) || empty($paymentId) || empty($signature)) {
@@ -127,18 +165,114 @@ class RazorpayService {
                 'User-Agent: MilanDating-Production/1.0',
             ],
             CURLOPT_TIMEOUT => 15,
+            CURLOPT_CONNECTTIMEOUT => 8,
         ]);
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
         curl_close($ch);
+
+        if ($curlError) {
+            error_log("[Razorpay] fetchPayment cURL error for {$paymentId}: {$curlError}");
+            return null;
+        }
 
         if ($httpCode >= 200 && $httpCode < 300 && $response) {
             $data = json_decode($response, true);
             return is_array($data) ? $data : null;
         }
 
+        error_log("[Razorpay] fetchPayment HTTP {$httpCode} for {$paymentId}: {$response}");
         return null;
+    }
+
+    /**
+     * Capture an authorized payment via REST API
+     */
+    public function capturePayment(string $paymentId, int $amountPaisa, string $currency = 'INR'): ?array {
+        if (empty($this->keyId) || empty($this->keySecret) || empty($paymentId)) {
+            return null;
+        }
+
+        $url = 'https://api.razorpay.com/v1/payments/' . urlencode($paymentId) . '/capture';
+        $payload = [
+            'amount' => $amountPaisa,
+            'currency' => $currency,
+        ];
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($payload),
+            CURLOPT_USERPWD => $this->keyId . ':' . $this->keySecret,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'User-Agent: MilanDating-Production/1.0',
+            ],
+            CURLOPT_TIMEOUT => 15,
+            CURLOPT_CONNECTTIMEOUT => 8,
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+
+        if ($curlError) {
+            error_log("[Razorpay] capturePayment cURL error for {$paymentId}: {$curlError}");
+            return null;
+        }
+
+        if ($httpCode >= 200 && $httpCode < 300 && $response) {
+            $data = json_decode($response, true);
+            return is_array($data) ? $data : null;
+        }
+
+        error_log("[Razorpay] capturePayment HTTP {$httpCode} for {$paymentId}: {$response}");
+        return null;
+    }
+
+    /**
+     * Test API connection with configured credentials
+     */
+    public function testConnection(): array {
+        if (empty($this->keyId) || empty($this->keySecret)) {
+            return ['success' => false, 'error' => 'Razorpay Key ID or Key Secret is empty.'];
+        }
+
+        $url = 'https://api.razorpay.com/v1/orders?count=1';
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_USERPWD => $this->keyId . ':' . $this->keySecret,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'User-Agent: MilanDating-Production/1.0',
+            ],
+            CURLOPT_TIMEOUT => 10,
+            CURLOPT_CONNECTTIMEOUT => 6,
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr = curl_error($ch);
+        curl_close($ch);
+
+        if ($curlErr) {
+            return ['success' => false, 'error' => "Network error connecting to Razorpay: {$curlErr}"];
+        }
+
+        if ($httpCode === 200) {
+            return ['success' => true, 'message' => 'Credentials verified successfully! Connected to Razorpay.'];
+        }
+
+        if ($httpCode === 401) {
+            return ['success' => false, 'error' => 'Authentication failed (HTTP 401). Invalid Key ID or Key Secret.'];
+        }
+
+        return ['success' => false, 'error' => "Razorpay returned HTTP {$httpCode}."];
     }
 
     /**

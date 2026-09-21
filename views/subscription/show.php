@@ -240,7 +240,19 @@
             const rzp = new Razorpay(options);
             rzp.on('payment.failed', function (resp) {
                 isProcessingBoost = false;
-                showToast(resp.error?.description || 'Payment failed. Please try again.', 'error');
+                const desc = resp.error?.description || 'Payment failed. Please try again.';
+                showToast(desc, 'error');
+
+                const failForm = new FormData();
+                failForm.append('razorpay_order_id', resp.error?.metadata?.order_id || data.order.id || '');
+                failForm.append('razorpay_payment_id', resp.error?.metadata?.payment_id || '');
+                failForm.append('reason', desc);
+                failForm.append('csrf_token', getCsrfToken());
+                fetch('/api/subscription/record-failure', {
+                    method: 'POST',
+                    body: failForm,
+                    headers: { 'X-CSRF-TOKEN': getCsrfToken() }
+                }).catch(() => {});
             });
             rzp.open();
 

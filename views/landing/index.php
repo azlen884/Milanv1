@@ -165,7 +165,7 @@
             <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">Step 03</span>
             <h3 class="text-xl font-bold text-slate-900 mt-1 mb-3">Connect On Mutual Interest</h3>
             <p class="text-slate-600 text-sm leading-relaxed">
-                Send interests to profiles you appreciate. When the interest is mutual, a match is made. Enjoy seamless text and voice messaging.
+                Send interests to profiles you appreciate. When the interest is mutual, a match is made. Enjoy seamless, real-time messaging.
             </p>
         </div>
     </div>

@@ -82,32 +82,50 @@ class SubscriptionController {
     public function createOrder(): void {
         $user = Auth::user();
         if (!$user) {
-            View::json(['success' => false, 'error' => 'Authentication required.'], 401);
+            View::json(['success' => false, 'error' => 'Authentication required. Please log in.'], 401);
         }
 
         if (!Session::verifyCsrf($_POST['csrf_token'] ?? '')) {
-            View::json(['success' => false, 'error' => 'Invalid security token.'], 403);
+            View::json(['success' => false, 'error' => 'Invalid security token. Please refresh the page.'], 403);
+        }
+
+        $rzp = new RazorpayService();
+        if (!$rzp->isEnabled()) {
+            View::json(['success' => false, 'error' => 'Razorpay payment gateway is currently disabled. Please contact support.'], 503);
+        }
+
+        if (!$rzp->hasCredentials()) {
+            View::json(['success' => false, 'error' => 'Payment gateway credentials are not configured in Admin Settings. Please configure API keys.'], 500);
         }
 
         $planId = (int)($_POST['plan_id'] ?? 0);
-        $type = $_POST['type'] ?? 'subscription';
+        $type = trim($_POST['type'] ?? 'subscription');
 
         if ($type === 'boost') {
-            $boostPrice = (int)(Database::one("SELECT setting_value FROM settings WHERE setting_key = 'boost_price_inr'")['setting_value'] ?? 19);
-            $amountPaisa = $boostPrice * 100;
-            $receipt = 'rcpt_bst_' . $user['id'] . '_' . time();
+            // Check boost permission
+            $boostInfo = BoostService::canUserBoost($user['id']);
+            if (!$boostInfo['allowed']) {
+                View::json(['success' => false, 'error' => $boostInfo['reason']], 400);
+            }
+
+            if (!empty($boostInfo['is_included'])) {
+                View::json(['success' => false, 'error' => 'Your active plan already includes complimentary Boost! You can activate it directly.'], 400);
+            }
+
+            $boostPrice = (int)$boostInfo['price_inr'];
+            $amountPaisa = (int)round(((float)$boostPrice) * 100);
+            $receipt = substr('rcpt_bst_' . $user['id'] . '_' . time(), 0, 40);
 
             try {
-                $rzp = new RazorpayService();
                 $order = $rzp->createOrder($amountPaisa, $receipt, [
-                    'user_id' => $user['id'],
+                    'user_id' => (string)$user['id'],
                     'type' => 'boost',
                 ]);
 
                 // Store order in payments table
                 Database::insert(
-                    "INSERT INTO payments (user_id, payment_type, razorpay_order_id, amount_paisa, currency, status)
-                     VALUES (:uid, 'boost', :oid, :amt, 'INR', 'created')",
+                    "INSERT INTO payments (user_id, payment_type, razorpay_order_id, amount_paisa, currency, status, created_at, updated_at)
+                     VALUES (:uid, 'boost', :oid, :amt, 'INR', 'created', NOW(), NOW())",
                     [':uid' => $user['id'], ':oid' => $order['id'], ':amt' => $amountPaisa]
                 );
 
@@ -115,6 +133,7 @@ class SubscriptionController {
                     'success' => true,
                     'order' => $order,
                     'key_id' => $rzp->getKeyId(),
+                    'type' => 'boost',
                     'user' => [
                         'name' => $user['name'],
                         'email' => $user['email'],
@@ -133,24 +152,24 @@ class SubscriptionController {
         );
 
         if (!$plan) {
-            View::json(['success' => false, 'error' => 'Invalid subscription plan.'], 400);
+            View::json(['success' => false, 'error' => 'Invalid or inactive subscription plan selected.'], 400);
         }
 
-        $amountPaisa = (int)$plan['price_inr'] * 100;
-        $receipt = 'rcpt_sub_' . $user['id'] . '_' . $plan['id'] . '_' . time();
+        $amountPaisa = (int)round(((float)$plan['price_inr']) * 100);
+        $receipt = substr('rcpt_sub_' . $user['id'] . '_' . $plan['id'] . '_' . time(), 0, 40);
 
         try {
-            $rzp = new RazorpayService();
             $order = $rzp->createOrder($amountPaisa, $receipt, [
-                'user_id' => $user['id'],
-                'plan_id' => $plan['id'],
+                'user_id' => (string)$user['id'],
+                'plan_id' => (string)$plan['id'],
+                'plan_code' => $plan['code'],
                 'type' => 'subscription',
             ]);
 
             // Save order in database
             Database::insert(
-                "INSERT INTO payments (user_id, plan_id, payment_type, razorpay_order_id, amount_paisa, currency, status)
-                 VALUES (:uid, :pid, 'subscription', :oid, :amt, 'INR', 'created')",
+                "INSERT INTO payments (user_id, plan_id, payment_type, razorpay_order_id, amount_paisa, currency, status, created_at, updated_at)
+                 VALUES (:uid, :pid, 'subscription', :oid, :amt, 'INR', 'created', NOW(), NOW())",
                 [
                     ':uid' => $user['id'],
                     ':pid' => $plan['id'],
@@ -164,6 +183,7 @@ class SubscriptionController {
                 'order' => $order,
                 'plan' => $plan,
                 'key_id' => $rzp->getKeyId(),
+                'type' => 'subscription',
                 'user' => [
                     'name' => $user['name'],
                     'email' => $user['email'],
@@ -195,7 +215,7 @@ class SubscriptionController {
         $typeInput = trim($_POST['type'] ?? '');
 
         if (empty($orderId) || empty($paymentId) || empty($signature)) {
-            View::json(['success' => false, 'error' => 'Missing payment parameters.'], 400);
+            View::json(['success' => false, 'error' => 'Missing payment parameters. Verification could not proceed.'], 400);
         }
 
         // 1. Fetch the original order record from the database
@@ -205,7 +225,7 @@ class SubscriptionController {
         );
 
         if (!$orderRecord) {
-            View::json(['success' => false, 'error' => 'Payment order record was not found.'], 404);
+            View::json(['success' => false, 'error' => 'Payment order record was not found in database.'], 404);
         }
 
         // 2. Verify order belongs to the logged-in user
@@ -232,10 +252,10 @@ class SubscriptionController {
             if (!$plan) {
                 View::json(['success' => false, 'error' => 'Invalid or inactive subscription plan.'], 400);
             }
-            $expectedAmountPaisa = ((int)$plan['price_inr']) * 100;
+            $expectedAmountPaisa = (int)round(((float)$plan['price_inr']) * 100);
         } elseif ($type === 'boost') {
             $boostPrice = (int)(Database::one("SELECT setting_value FROM settings WHERE setting_key = 'boost_price_inr'")['setting_value'] ?? 19);
-            $expectedAmountPaisa = $boostPrice * 100;
+            $expectedAmountPaisa = (int)round(((float)$boostPrice) * 100);
         }
 
         if ((int)$orderRecord['amount_paisa'] !== $expectedAmountPaisa) {
@@ -270,25 +290,41 @@ class SubscriptionController {
 
         if (!$isValid) {
             Database::execute(
-                "UPDATE payments SET status = 'failed', razorpay_payment_id = :pid WHERE razorpay_order_id = :oid",
+                "UPDATE payments SET status = 'failed', razorpay_payment_id = :pid, updated_at = NOW() WHERE razorpay_order_id = :oid",
                 [':pid' => $paymentId, ':oid' => $orderId]
             );
-            View::json(['success' => false, 'error' => 'Payment verification signature failed.'], 400);
+            View::json(['success' => false, 'error' => 'Payment signature verification failed. Cryptographic validation failed.'], 400);
         }
 
-        // 8. Optional/Direct gateway verification via Razorpay REST API
+        // 8. Confirm captured status with Razorpay REST API
+        // "Never activate a subscription or boost unless the payment is confirmed as captured."
         $apiPayment = $rzp->fetchPayment($paymentId);
+        if (!$apiPayment) {
+            // Retry once for transient network jitter
+            usleep(300000);
+            $apiPayment = $rzp->fetchPayment($paymentId);
+        }
+
         if ($apiPayment) {
             $apiStatus = $apiPayment['status'] ?? '';
             $apiOrder = $apiPayment['order_id'] ?? '';
             $apiAmount = (int)($apiPayment['amount'] ?? 0);
 
-            if (!in_array($apiStatus, ['captured', 'authorized'], true)) {
+            // If status is authorized, attempt to capture it immediately
+            if ($apiStatus === 'authorized') {
+                $capturedPayment = $rzp->capturePayment($paymentId, $expectedAmountPaisa);
+                if ($capturedPayment && ($capturedPayment['status'] ?? '') === 'captured') {
+                    $apiPayment = $capturedPayment;
+                    $apiStatus = 'captured';
+                }
+            }
+
+            if ($apiStatus !== 'captured') {
                 Database::execute(
-                    "UPDATE payments SET status = 'failed', razorpay_payment_id = :pid WHERE razorpay_order_id = :oid",
+                    "UPDATE payments SET status = 'failed', razorpay_payment_id = :pid, updated_at = NOW() WHERE razorpay_order_id = :oid",
                     [':pid' => $paymentId, ':oid' => $orderId]
                 );
-                View::json(['success' => false, 'error' => "Payment status is {$apiStatus}, not captured."], 400);
+                View::json(['success' => false, 'error' => "Payment is currently in '{$apiStatus}' state and not confirmed as captured. Please contact support if your account was debited."], 400);
             }
 
             if (!empty($apiOrder) && $apiOrder !== $orderId) {
@@ -326,6 +362,39 @@ class SubscriptionController {
         } else {
             View::json(['success' => false, 'error' => 'Payment was received but activating your perks encountered an error. Please contact support.'], 500);
         }
+    }
+
+    /**
+     * Record Failed Payment Attempt (AJAX)
+     */
+    public function recordFailure(): void {
+        $user = Auth::user();
+        if (!$user) {
+            View::json(['success' => false, 'error' => 'Unauthorized'], 401);
+        }
+
+        if (!Session::verifyCsrf($_POST['csrf_token'] ?? '')) {
+            View::json(['success' => false, 'error' => 'Invalid CSRF token'], 403);
+        }
+
+        $orderId = trim($_POST['razorpay_order_id'] ?? '');
+        $paymentId = trim($_POST['razorpay_payment_id'] ?? '');
+        $reason = trim($_POST['reason'] ?? 'Payment failed at bank/gateway');
+
+        if (!empty($orderId)) {
+            Database::execute(
+                "UPDATE payments 
+                 SET status = 'failed', razorpay_payment_id = :pid, updated_at = NOW() 
+                 WHERE razorpay_order_id = :oid AND user_id = :uid AND status = 'created'",
+                [
+                    ':pid' => $paymentId ?: null,
+                    ':oid' => $orderId,
+                    ':uid' => $user['id'],
+                ]
+            );
+        }
+
+        View::json(['success' => true]);
     }
 
     /**

@@ -49,7 +49,7 @@
                                 <span class="text-[10px] text-slate-400"><?= date('H:i', strtotime($c['last_message_at'])) ?></span>
                             </div>
                             <p class="text-xs text-slate-500 truncate mt-0.5 <?= (($c['unread_count'] ?? 0) > 0) ? 'font-bold text-slate-900' : '' ?>">
-                                <?= ($c['last_message_type'] === 'voice') ? '🎤 Voice message' : htmlspecialchars($c['last_message_body'] ?? 'Say hello!') ?>
+                                <?= htmlspecialchars($c['last_message_body'] ?? 'Say hello!') ?>
                             </p>
                         </div>
                     </a>
@@ -119,19 +119,7 @@
                     <?php $isMe = ((int)$m['sender_id'] === (int)$currentUser['id']); ?>
                     <div class="flex <?= $isMe ? 'justify-end' : 'justify-start' ?>">
                         <div class="max-w-[75%] rounded-2xl px-4 py-2.5 text-sm <?= $isMe ? 'bg-brand-600 text-white shadow-sm rounded-br-none' : 'bg-white text-slate-800 border border-slate-200/80 shadow-sm rounded-bl-none' ?>">
-                            
-                            <?php if ($m['type'] === 'voice'): ?>
-                            <!-- Real Audio Player -->
-                            <div class="flex items-center gap-2 py-1">
-                                <audio controls class="h-8 max-w-[220px]">
-                                    <source src="<?= htmlspecialchars($m['media_url']) ?>" type="audio/webm">
-                                    Your browser does not support audio playback.
-                                </audio>
-                                <span class="text-[10px] <?= $isMe ? 'text-rose-200' : 'text-slate-400' ?>"><?= (int)$m['duration_seconds'] ?>s</span>
-                            </div>
-                            <?php else: ?>
-                            <p class="whitespace-pre-line leading-relaxed"><?= htmlspecialchars($m['body']) ?></p>
-                            <?php endif; ?>
+                            <p class="whitespace-pre-line leading-relaxed"><?= htmlspecialchars($m['body'] ?? '') ?></p>
 
                             <div class="text-[9px] mt-1 text-right <?= $isMe ? 'text-rose-200' : 'text-slate-400' ?>">
                                 <?= date('H:i', strtotime($m['created_at'])) ?>
@@ -166,30 +154,9 @@
                 <?php endforeach; ?>
             </div>
 
-            <!-- Recording Status Banner -->
-            <div id="recording-bar" class="hidden px-4 py-2 bg-rose-50 border-t border-rose-200 flex items-center justify-between text-xs text-brand-700">
-                <div class="flex items-center gap-2">
-                    <span class="w-2.5 h-2.5 bg-red-600 rounded-full animate-pulse"></span>
-                    <span class="font-bold">Recording Voice Message: <span id="record-timer">00:00</span></span>
-                </div>
-                <div class="flex items-center gap-2">
-                    <button type="button" onclick="cancelRecording()" class="px-3 py-1 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold text-xs">
-                        Cancel
-                    </button>
-                    <button type="button" onclick="stopAndSendRecording()" class="px-3 py-1 rounded-lg bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs flex items-center gap-1">
-                        <i data-lucide="send" class="w-3 h-3"></i> Send
-                    </button>
-                </div>
-            </div>
-
             <!-- Message Input Form -->
             <form id="chat-input-form" onsubmit="sendText(event)" class="p-3 sm:p-4 bg-white border-t border-slate-100 flex items-center gap-2">
                 <input type="hidden" id="conversation-id" value="<?= (int)$activeConversation['id'] ?>">
-
-                <!-- Voice Message Record Trigger (Rule 20) -->
-                <button type="button" id="mic-btn" onclick="startRecording()" title="Record Voice Message" class="p-2.5 rounded-full text-slate-500 hover:text-brand-600 hover:bg-rose-50 transition-colors">
-                    <i data-lucide="mic" class="w-5 h-5"></i>
-                </button>
 
                 <!-- Text Input with typing listener -->
                 <input type="text" id="message-text" oninput="handleTypingInput()" placeholder="Type a thoughtful message..." autocomplete="off"
@@ -293,10 +260,6 @@
     const convId = <?= $activeConversation ? (int)$activeConversation['id'] : 0 ?>;
     const activePartnerId = <?= $activePartner ? (int)$activePartner['id'] : 0 ?>;
     let lastMsgId = <?= !empty($messages) ? (int)end($messages)['id'] : 0 ?>;
-    let mediaRecorder = null;
-    let audioChunks = [];
-    let recordInterval = null;
-    let recordSeconds = 0;
 
     // Scroll to bottom of message stream
     function scrollToBottom() {
@@ -399,19 +362,7 @@
         
         const nowStr = new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-        let content = '';
-        if (m.type === 'voice') {
-            content = `
-                <div class="flex items-center gap-2 py-1">
-                    <audio controls class="h-8 max-w-[220px]">
-                        <source src="${m.media_url}" type="audio/webm">
-                    </audio>
-                    <span class="text-[10px] ${isMe ? 'text-rose-200' : 'text-slate-400'}">${m.duration_seconds || 1}s</span>
-                </div>
-            `;
-        } else {
-            content = `<p class="whitespace-pre-line leading-relaxed">${escapeHtml(m.body)}</p>`;
-        }
+        const content = `<p class="whitespace-pre-line leading-relaxed">${escapeHtml(m.body || '')}</p>`;
 
         wrapper.innerHTML = `
             <div class="max-w-[75%] rounded-2xl px-4 py-2.5 text-sm ${isMe ? 'bg-brand-600 text-white shadow-sm rounded-br-none' : 'bg-white text-slate-800 border border-slate-200/80 shadow-sm rounded-bl-none'}">
@@ -429,151 +380,6 @@
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
-    }
-
-    // REAL VOICE MESSAGE RECORDING (Rule 20)
-    async function startRecording() {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            alert('Your browser does not support audio recording.');
-            return;
-        }
-
-        let selectedMime = '';
-        let fileExt = 'webm';
-        if (typeof MediaRecorder.isTypeSupported === 'function') {
-            if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-                selectedMime = 'audio/webm;codecs=opus';
-                fileExt = 'webm';
-            } else if (MediaRecorder.isTypeSupported('audio/webm')) {
-                selectedMime = 'audio/webm';
-                fileExt = 'webm';
-            } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
-                selectedMime = 'audio/mp4';
-                fileExt = 'mp4';
-            } else if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
-                selectedMime = 'audio/ogg;codecs=opus';
-                fileExt = 'ogg';
-            } else if (MediaRecorder.isTypeSupported('audio/wav')) {
-                selectedMime = 'audio/wav';
-                fileExt = 'wav';
-            }
-        }
-
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            const options = selectedMime ? { mimeType: selectedMime } : {};
-            mediaRecorder = new MediaRecorder(stream, options);
-            audioChunks = [];
-
-            const activeMime = mediaRecorder.mimeType || selectedMime || 'audio/webm';
-            const activeExt = fileExt;
-
-            mediaRecorder.ondataavailable = (e) => {
-                if (e.data && e.data.size > 0) audioChunks.push(e.data);
-            };
-
-            mediaRecorder.start(250); // Collect slices every 250ms
-            recordSeconds = 0;
-            document.getElementById('recording-bar').classList.remove('hidden');
-            document.getElementById('chat-input-form').classList.add('opacity-50', 'pointer-events-none');
-
-            recordInterval = setInterval(() => {
-                recordSeconds++;
-                const mins = String(Math.floor(recordSeconds / 60)).padStart(2, '0');
-                const secs = String(recordSeconds % 60).padStart(2, '0');
-                document.getElementById('record-timer').textContent = `${mins}:${secs}`;
-                if (recordSeconds >= 60) stopAndSendRecording(activeMime, activeExt);
-            }, 1000);
-
-            // Store active recording meta
-            mediaRecorder._activeMime = activeMime;
-            mediaRecorder._activeExt = activeExt;
-
-        } catch (err) {
-            alert('Microphone permission denied or unavailable: ' + (err.message || 'Check browser permissions.'));
-        }
-    }
-
-    function cancelRecording() {
-        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-            mediaRecorder.stop();
-            if (mediaRecorder.stream) {
-                mediaRecorder.stream.getTracks().forEach(t => t.stop());
-            }
-        }
-        clearInterval(recordInterval);
-        document.getElementById('recording-bar').classList.add('hidden');
-        document.getElementById('chat-input-form').classList.remove('opacity-50', 'pointer-events-none');
-    }
-
-    function stopAndSendRecording(forcedMime, forcedExt) {
-        if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
-
-        clearInterval(recordInterval);
-        const duration = Math.max(1, recordSeconds);
-        const mimeType = forcedMime || mediaRecorder._activeMime || 'audio/webm';
-        const fileExt = forcedExt || mediaRecorder._activeExt || (mimeType.includes('mp4') ? 'mp4' : 'webm');
-
-        mediaRecorder.onstop = async () => {
-            if (mediaRecorder.stream) {
-                mediaRecorder.stream.getTracks().forEach(t => t.stop());
-            }
-
-            if (audioChunks.length === 0) {
-                showToast('No audio data was recorded.', 'error');
-                document.getElementById('recording-bar').classList.add('hidden');
-                document.getElementById('chat-input-form').classList.remove('opacity-50', 'pointer-events-none');
-                return;
-            }
-
-            const audioBlob = new Blob(audioChunks, { type: mimeType });
-            const formData = new FormData();
-            formData.append('conversation_id', convId);
-            formData.append('duration_seconds', duration);
-            formData.append('audio_data', audioBlob, `voice_${Date.now()}.${fileExt}`);
-            formData.append('csrf_token', getCsrfToken());
-
-            try {
-                const res = await fetch('/api/chat/send-voice', {
-                    method: 'POST',
-                    body: formData,
-                    headers: {
-                        'X-CSRF-TOKEN': getCsrfToken(),
-                        'X-Requested-With': 'XMLHttpRequest',
-                        'Accept': 'application/json'
-                    }
-                });
-
-                let data = null;
-                try {
-                    data = await res.json();
-                } catch (jsonErr) {
-                    data = null;
-                }
-
-                if (res.ok && data && data.success) {
-                    appendMessage({
-                        id: data.message_id,
-                        type: 'voice',
-                        media_url: data.media_url || URL.createObjectURL(audioBlob),
-                        duration_seconds: data.duration_seconds || duration,
-                        created_at: new Date().toISOString()
-                    }, true);
-                } else {
-                    if (data && data.limit_exceeded) {
-                        document.getElementById('limit-banner')?.classList.remove('hidden');
-                    }
-                    showToast(data?.error || 'Voice message failed to send.', 'error');
-                }
-            } catch (e) {
-                showToast('Unable to upload voice recording: ' + (e.message || 'Network error.'), 'error');
-            } finally {
-                document.getElementById('recording-bar').classList.add('hidden');
-                document.getElementById('chat-input-form').classList.remove('opacity-50', 'pointer-events-none');
-            }
-        };
-
-        mediaRecorder.stop();
     }
 
     // =========================================================================

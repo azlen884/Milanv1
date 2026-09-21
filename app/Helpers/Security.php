@@ -80,31 +80,36 @@ class Security {
         $mime = finfo_file($finfo, $file['tmp_name']);
         finfo_close($finfo);
 
-        // Handle generic mime detected for audio blobs (e.g. webm recording in Chrome/Linux)
-        $isAudioExpected = false;
-        foreach ($allowedMimes as $am) {
-            if (str_starts_with($am, 'audio/') || str_contains($am, 'webm') || str_contains($am, 'ogg')) {
-                $isAudioExpected = true;
-                break;
+        // Normalize image MIME types
+        $mimeMap = [
+            'image/jpg' => 'image/jpeg',
+            'image/pjpeg' => 'image/jpeg',
+            'image/x-png' => 'image/png',
+        ];
+        if (isset($mimeMap[$mime])) {
+            $mime = $mimeMap[$mime];
+        }
+
+        // Additional image validation for image uploads
+        if (str_starts_with($mime, 'image/') || in_array('image/jpeg', $allowedMimes, true)) {
+            $imageInfo = @getimagesize($file['tmp_name']);
+            if ($imageInfo !== false && !empty($imageInfo['mime'])) {
+                $detectedMime = $imageInfo['mime'];
+                if (isset($mimeMap[$detectedMime])) {
+                    $detectedMime = $mimeMap[$detectedMime];
+                }
+                $mime = $detectedMime;
+            } elseif (in_array('image/jpeg', $allowedMimes, true) && !in_array('application/pdf', $allowedMimes, true)) {
+                return ['valid' => false, 'error' => 'The uploaded file is not a valid or readable image.'];
             }
         }
 
         if (!in_array($mime, $allowedMimes, true)) {
-            // If audio was expected and client sent audio/webm or audio/ogg container detected as octet-stream/matroska
-            if ($isAudioExpected && in_array($mime, ['application/octet-stream', 'audio/x-matroska', 'video/x-matroska', 'video/webm'], true)) {
-                $mime = 'audio/webm';
-            } else {
-                $typeDesc = $isAudioExpected ? 'audio formats (WebM, OGG, MP4, WAV)' : 'JPEG, PNG, and WebP images';
-                return ['valid' => false, 'error' => "Invalid file format ({$mime}). Only valid {$typeDesc} are allowed."];
+            $typeDesc = 'JPEG, PNG, and WebP images';
+            if (in_array('application/pdf', $allowedMimes, true)) {
+                $typeDesc .= ' or PDF documents';
             }
-        }
-
-        // Additional image validation for image uploads
-        if (str_starts_with($mime, 'image/')) {
-            $imageInfo = @getimagesize($file['tmp_name']);
-            if ($imageInfo === false || empty($imageInfo[0]) || empty($imageInfo[1])) {
-                return ['valid' => false, 'error' => 'The uploaded file is not a valid or readable image.'];
-            }
+            return ['valid' => false, 'error' => "Invalid file format ({$mime}). Only valid {$typeDesc} are allowed."];
         }
 
         return ['valid' => true, 'mime' => $mime];

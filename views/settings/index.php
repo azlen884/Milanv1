@@ -99,7 +99,7 @@
             <label id="upload-photo-label" class="px-5 py-2.5 rounded-full bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs shadow-sm cursor-pointer flex items-center gap-1.5 transition-all">
                 <i data-lucide="upload" class="w-4 h-4" id="upload-icon"></i>
                 <span id="upload-text">Upload Photo</span>
-                <input type="file" id="photo-upload-input" accept="image/jpeg,image/png,image/webp" class="hidden" onchange="uploadPhoto(this)">
+                <input type="file" id="photo-upload-input" name="photo" accept="image/jpeg,image/png,image/webp" class="hidden" onchange="uploadPhoto(this)">
             </label>
         </div>
 
@@ -426,20 +426,24 @@
                         }
                     }
 
-                    const canvas = document.createElement('canvas');
-                    canvas.width = width;
-                    canvas.height = height;
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(img, 0, 0, width, height);
+                    try {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
 
-                    canvas.toBlob((blob) => {
-                        if (blob && blob.size < file.size) {
-                            const newFilename = file.name.replace(/\.[^/.]+$/, "") + ".jpg";
-                            resolve(new File([blob], newFilename, { type: 'image/jpeg' }));
-                        } else {
-                            resolve(file);
-                        }
-                    }, 'image/jpeg', 0.88);
+                        canvas.toBlob((blob) => {
+                            if (blob && blob.size < file.size) {
+                                const newFilename = file.name.replace(/\.[^/.]+$/, "") + ".jpg";
+                                resolve(new File([blob], newFilename, { type: 'image/jpeg' }));
+                            } else {
+                                resolve(file);
+                            }
+                        }, 'image/jpeg', 0.88);
+                    } catch (canvasErr) {
+                        resolve(file);
+                    }
                 };
                 img.onerror = () => resolve(file);
                 img.src = e.target.result;
@@ -483,7 +487,11 @@
 
         try {
             // Compress if smartphone photo > 1.5MB
-            file = await compressImageIfLarge(file);
+            try {
+                file = await compressImageIfLarge(file);
+            } catch (compErr) {
+                // proceed with original file
+            }
 
             if (text) {
                 text.textContent = 'Uploading...';
@@ -493,15 +501,20 @@
             formData.append('photo', file);
             formData.append('csrf_token', getCsrfToken());
 
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 45000);
+
             const res = await fetch('/api/photos/upload', {
                 method: 'POST',
                 body: formData,
+                signal: controller.signal,
                 headers: {
                     'X-CSRF-TOKEN': getCsrfToken(),
                     'X-Requested-With': 'XMLHttpRequest',
                     'Accept': 'application/json'
                 }
             });
+            clearTimeout(timeoutId);
 
             let data = null;
             try {
