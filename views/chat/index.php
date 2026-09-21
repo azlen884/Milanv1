@@ -438,16 +438,41 @@
             return;
         }
 
+        let selectedMime = '';
+        let fileExt = 'webm';
+        if (typeof MediaRecorder.isTypeSupported === 'function') {
+            if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+                selectedMime = 'audio/webm;codecs=opus';
+                fileExt = 'webm';
+            } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+                selectedMime = 'audio/webm';
+                fileExt = 'webm';
+            } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+                selectedMime = 'audio/mp4';
+                fileExt = 'mp4';
+            } else if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
+                selectedMime = 'audio/ogg;codecs=opus';
+                fileExt = 'ogg';
+            } else if (MediaRecorder.isTypeSupported('audio/wav')) {
+                selectedMime = 'audio/wav';
+                fileExt = 'wav';
+            }
+        }
+
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            mediaRecorder = new MediaRecorder(stream);
+            const options = selectedMime ? { mimeType: selectedMime } : {};
+            mediaRecorder = new MediaRecorder(stream, options);
             audioChunks = [];
 
+            const activeMime = mediaRecorder.mimeType || selectedMime || 'audio/webm';
+            const activeExt = fileExt;
+
             mediaRecorder.ondataavailable = (e) => {
-                if (e.data.size > 0) audioChunks.push(e.data);
+                if (e.data && e.data.size > 0) audioChunks.push(e.data);
             };
 
-            mediaRecorder.start();
+            mediaRecorder.start(250); // Collect slices every 250ms
             recordSeconds = 0;
             document.getElementById('recording-bar').classList.remove('hidden');
             document.getElementById('chat-input-form').classList.add('opacity-50', 'pointer-events-none');
@@ -457,59 +482,91 @@
                 const mins = String(Math.floor(recordSeconds / 60)).padStart(2, '0');
                 const secs = String(recordSeconds % 60).padStart(2, '0');
                 document.getElementById('record-timer').textContent = `${mins}:${secs}`;
-                if (recordSeconds >= 60) stopAndSendRecording();
+                if (recordSeconds >= 60) stopAndSendRecording(activeMime, activeExt);
             }, 1000);
 
+            // Store active recording meta
+            mediaRecorder._activeMime = activeMime;
+            mediaRecorder._activeExt = activeExt;
+
         } catch (err) {
-            alert('Microphone permission denied or unavailable: ' + err.message);
+            alert('Microphone permission denied or unavailable: ' + (err.message || 'Check browser permissions.'));
         }
     }
 
     function cancelRecording() {
         if (mediaRecorder && mediaRecorder.state !== 'inactive') {
             mediaRecorder.stop();
-            mediaRecorder.stream.getTracks().forEach(t => t.stop());
+            if (mediaRecorder.stream) {
+                mediaRecorder.stream.getTracks().forEach(t => t.stop());
+            }
         }
         clearInterval(recordInterval);
         document.getElementById('recording-bar').classList.add('hidden');
         document.getElementById('chat-input-form').classList.remove('opacity-50', 'pointer-events-none');
     }
 
-    function stopAndSendRecording() {
+    function stopAndSendRecording(forcedMime, forcedExt) {
         if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
 
         clearInterval(recordInterval);
-        const duration = recordSeconds;
+        const duration = Math.max(1, recordSeconds);
+        const mimeType = forcedMime || mediaRecorder._activeMime || 'audio/webm';
+        const fileExt = forcedExt || mediaRecorder._activeExt || (mimeType.includes('mp4') ? 'mp4' : 'webm');
 
         mediaRecorder.onstop = async () => {
-            mediaRecorder.stream.getTracks().forEach(t => t.stop());
-            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+            if (mediaRecorder.stream) {
+                mediaRecorder.stream.getTracks().forEach(t => t.stop());
+            }
 
+            if (audioChunks.length === 0) {
+                showToast('No audio data was recorded.', 'error');
+                document.getElementById('recording-bar').classList.add('hidden');
+                document.getElementById('chat-input-form').classList.remove('opacity-50', 'pointer-events-none');
+                return;
+            }
+
+            const audioBlob = new Blob(audioChunks, { type: mimeType });
             const formData = new FormData();
             formData.append('conversation_id', convId);
             formData.append('duration_seconds', duration);
-            formData.append('audio_data', audioBlob, 'voice.webm');
+            formData.append('audio_data', audioBlob, `voice_${Date.now()}.${fileExt}`);
             formData.append('csrf_token', getCsrfToken());
 
             try {
-                const res = await fetch('/api/chat/send-voice', { method: 'POST', body: formData });
-                const data = await res.json();
-                if (data.success) {
+                const res = await fetch('/api/chat/send-voice', {
+                    method: 'POST',
+                    body: formData,
+                    headers: {
+                        'X-CSRF-TOKEN': getCsrfToken(),
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Accept': 'application/json'
+                    }
+                });
+
+                let data = null;
+                try {
+                    data = await res.json();
+                } catch (jsonErr) {
+                    data = null;
+                }
+
+                if (res.ok && data && data.success) {
                     appendMessage({
                         id: data.message_id,
                         type: 'voice',
-                        media_url: URL.createObjectURL(audioBlob),
-                        duration_seconds: duration,
+                        media_url: data.media_url || URL.createObjectURL(audioBlob),
+                        duration_seconds: data.duration_seconds || duration,
                         created_at: new Date().toISOString()
                     }, true);
                 } else {
-                    if (data.limit_exceeded) {
+                    if (data && data.limit_exceeded) {
                         document.getElementById('limit-banner')?.classList.remove('hidden');
                     }
-                    showToast(data.error || 'Voice message limit reached.', 'error');
+                    showToast(data?.error || 'Voice message failed to send.', 'error');
                 }
             } catch (e) {
-                showToast('Network error uploading audio.', 'error');
+                showToast('Unable to upload voice recording: ' + (e.message || 'Network error.'), 'error');
             } finally {
                 document.getElementById('recording-bar').classList.add('hidden');
                 document.getElementById('chat-input-form').classList.remove('opacity-50', 'pointer-events-none');

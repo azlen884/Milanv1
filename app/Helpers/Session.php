@@ -99,4 +99,11 @@ class Session {
         }
         return null;
     }
+
+    public static function closeWrite(): void {
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+            self::$started = false;
+        }
+    }
 }

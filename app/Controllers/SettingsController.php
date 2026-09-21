@@ -113,6 +113,11 @@ class SettingsController {
             View::json(['success' => false, 'error' => 'Authentication required. Please sign in.'], 401);
         }
 
+        // Check if file upload was cleared by post_max_size limit
+        if (($_SERVER['CONTENT_LENGTH'] ?? 0) > 0 && empty($_POST) && empty($_FILES)) {
+            View::json(['success' => false, 'error' => 'Uploaded photo exceeds server size limit. Please upload a photo under 15MB.'], 413);
+        }
+
         $csrfToken = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
         if (!Session::verifyCsrf($csrfToken)) {
             View::json(['success' => false, 'error' => 'Security token expired. Please refresh the page.'], 403);
@@ -123,6 +128,19 @@ class SettingsController {
         }
 
         $file = $_FILES['photo'];
+        if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
+            $errMap = [
+                UPLOAD_ERR_INI_SIZE => 'Photo file exceeds server upload size limit.',
+                UPLOAD_ERR_FORM_SIZE => 'Photo file exceeds form size limit.',
+                UPLOAD_ERR_PARTIAL => 'Photo was only partially uploaded. Please try again.',
+                UPLOAD_ERR_NO_FILE => 'No photo file was uploaded.',
+                UPLOAD_ERR_NO_TMP_DIR => 'Missing temporary folder on server.',
+                UPLOAD_ERR_CANT_WRITE => 'Failed to write photo to disk.',
+                UPLOAD_ERR_EXTENSION => 'File upload stopped by PHP extension.',
+            ];
+            View::json(['success' => false, 'error' => $errMap[$file['error']] ?? 'Photo upload error: code ' . $file['error']], 400);
+        }
+
         $val = Security::validateUpload($file, ['image/jpeg', 'image/png', 'image/webp'], 15 * 1024 * 1024);
         if (!$val['valid']) {
             View::json(['success' => false, 'error' => $val['error']], 400);
@@ -136,32 +154,34 @@ class SettingsController {
 
         $uploadDir = dirname(__DIR__, 2) . '/public/uploads/profiles';
         if (!is_dir($uploadDir)) {
-            mkdir($uploadDir, 0775, true);
+            @mkdir($uploadDir, 0775, true);
         }
 
-        $rawExt = pathinfo($file['name'] ?? '', PATHINFO_EXTENSION);
-        $cleanExt = strtolower(preg_replace('/[^a-zA-Z0-9]/', '', $rawExt));
-        if (empty($cleanExt)) {
-            $cleanExt = match ($val['mime']) {
-                'image/png' => 'png',
-                'image/webp' => 'webp',
-                default => 'jpg',
-            };
-        }
+        $cleanExt = match ($val['mime']) {
+            'image/png' => 'png',
+            'image/webp' => 'webp',
+            default => 'jpg',
+        };
 
         $filename = Security::randomFilename($cleanExt);
         $target = $uploadDir . '/' . $filename;
 
         $saved = false;
         if (is_uploaded_file($file['tmp_name'])) {
-            $saved = move_uploaded_file($file['tmp_name'], $target);
-        } elseif (php_sapi_name() === 'cli' && file_exists($file['tmp_name'])) {
-            $saved = copy($file['tmp_name'], $target);
+            $saved = @move_uploaded_file($file['tmp_name'], $target);
+        }
+        if (!$saved && file_exists($file['tmp_name'])) {
+            $saved = @copy($file['tmp_name'], $target);
+            if ($saved && is_uploaded_file($file['tmp_name'])) {
+                @unlink($file['tmp_name']);
+            }
         }
 
         if (!$saved) {
             View::json(['success' => false, 'error' => 'Failed to write photo to storage directory. Check folder permissions.'], 500);
         }
+
+        @chmod($target, 0644);
 
         $photoUrl = '/uploads/profiles/' . $filename;
         $hasCurrentPrimary = !empty($user['primary_photo']) && $existingCount > 0;
@@ -177,6 +197,7 @@ class SettingsController {
                 "UPDATE user_profiles SET primary_photo = :url WHERE user_id = :uid",
                 [':url' => $photoUrl, ':uid' => $user['id']]
             );
+            Auth::clearCache();
         }
 
         View::json([

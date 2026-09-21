@@ -191,6 +191,9 @@ class ChatController {
             View::json(['messages' => []], 401);
         }
 
+        // Release session lock early so poll does not block other requests / page navigation
+        Session::closeWrite();
+
         $convId = (int)($_GET['id'] ?? 0);
         $afterId = (int)($_GET['after'] ?? 0);
 

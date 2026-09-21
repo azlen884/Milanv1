@@ -76,8 +76,8 @@
 
                 <!-- Pay Button (Razorpay Real Payment) -->
                 <div class="mt-10">
-                    <button onclick="initiateRazorpay(<?= $plan['id'] ?>)" class="w-full py-4 rounded-2xl <?= $isThreeMonth ? 'bg-gradient-to-r from-brand-600 to-rose-600 hover:from-brand-700 hover:to-rose-700 shadow-lg shadow-brand-600/30' : 'bg-slate-900 hover:bg-slate-800' ?> text-white font-bold text-sm transition-all flex items-center justify-center gap-2">
-                        <span>Subscribe with Razorpay</span>
+                    <button id="pay-btn-<?= $plan['id'] ?>" onclick="initiateRazorpay(<?= $plan['id'] ?>)" class="w-full py-4 rounded-2xl <?= $isThreeMonth ? 'bg-gradient-to-r from-brand-600 to-rose-600 hover:from-brand-700 hover:to-rose-700 shadow-lg shadow-brand-600/30' : 'bg-slate-900 hover:bg-slate-800' ?> text-white font-bold text-sm transition-all flex items-center justify-center gap-2">
+                        <span id="pay-btn-text-<?= $plan['id'] ?>">Subscribe with Razorpay</span>
                         <i data-lucide="arrow-right" class="w-4 h-4"></i>
                     </button>
                 </div>
@@ -94,22 +94,74 @@
     </div>
 </div>
 
+<!-- Verification Overlay Modal -->
+<div id="payment-verify-modal" class="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl p-8 max-w-sm w-full text-center shadow-2xl border border-slate-100">
+        <div class="w-16 h-16 rounded-2xl bg-brand-50 text-brand-600 flex items-center justify-center mx-auto mb-4 animate-spin">
+            <i data-lucide="loader-2" class="w-8 h-8"></i>
+        </div>
+        <h3 class="font-serif text-lg font-bold text-slate-900 mb-2">Verifying Payment</h3>
+        <p class="text-xs text-slate-500 leading-relaxed">
+            Please wait while we confirm your payment securely with Razorpay. Do not refresh or close this window.
+        </p>
+    </div>
+</div>
+
 <script>
+    let isProcessingPayment = false;
+
+    function ensureRazorpayScript() {
+        return new Promise((resolve, reject) => {
+            if (typeof Razorpay !== 'undefined') {
+                return resolve(true);
+            }
+            const script = document.createElement('script');
+            script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+            script.onload = () => resolve(true);
+            script.onerror = () => reject(new Error('Failed to load Razorpay Checkout script.'));
+            document.head.appendChild(script);
+        });
+    }
+
     async function initiateRazorpay(planId) {
-        const formData = new FormData();
-        formData.append('plan_id', planId);
-        formData.append('type', 'subscription');
-        formData.append('csrf_token', getCsrfToken());
+        if (isProcessingPayment) return;
+
+        const btn = document.getElementById(`pay-btn-${planId}`);
+        const btnText = document.getElementById(`pay-btn-text-${planId}`);
+        const originalText = btnText ? btnText.textContent : 'Subscribe with Razorpay';
+
+        isProcessingPayment = true;
+        if (btn) btn.classList.add('opacity-75', 'pointer-events-none');
+        if (btnText) btnText.textContent = 'Connecting to Gateway...';
 
         try {
+            await ensureRazorpayScript();
+
+            const formData = new FormData();
+            formData.append('plan_id', planId);
+            formData.append('type', 'subscription');
+            formData.append('csrf_token', getCsrfToken());
+
             const res = await fetch('/api/subscription/create-order', {
                 method: 'POST',
-                body: formData
+                body: formData,
+                headers: {
+                    'X-CSRF-TOKEN': getCsrfToken(),
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                }
             });
-            const data = await res.json();
 
-            if (!data.success) {
-                showToast(data.error || 'Failed to create payment order.', 'error');
+            let data = null;
+            try {
+                data = await res.json();
+            } catch (jsonErr) {
+                data = null;
+            }
+
+            if (!res.ok || !data || !data.success) {
+                showToast(data?.error || 'Failed to create payment order. Please try again.', 'error');
+                resetButton(planId, originalText);
                 return;
             }
 
@@ -129,32 +181,45 @@
                     color: '#E11D48'
                 },
                 handler: async function (response) {
-                    // Server-side Signature Verification (Rule 13)
-                    await verifyPayment(response, planId, 'subscription');
+                    await verifyPayment(response, planId, 'subscription', originalText);
                 },
                 modal: {
                     ondismiss: function() {
-                        showToast('Payment was cancelled.', 'error');
+                        resetButton(planId, originalText);
+                        showToast('Payment window closed.', 'error');
                     }
                 }
             };
 
             const rzp1 = new Razorpay(options);
             rzp1.on('payment.failed', function (resp) {
-                showToast(resp.error?.description || 'Payment failed. Please try again.', 'error');
+                resetButton(planId, originalText);
+                showToast(resp.error?.description || 'Payment was declined by your bank or gateway.', 'error');
             });
             rzp1.open();
 
         } catch (err) {
-            showToast('Network error initializing payment.', 'error');
+            resetButton(planId, originalText);
+            showToast('Unable to connect to payment gateway: ' + (err.message || 'Please check your connection.'), 'error');
         }
     }
 
-    async function verifyPayment(rzpResponse, planId, type) {
+    function resetButton(planId, originalText) {
+        isProcessingPayment = false;
+        const btn = document.getElementById(`pay-btn-${planId}`);
+        const btnText = document.getElementById(`pay-btn-text-${planId}`);
+        if (btn) btn.classList.remove('opacity-75', 'pointer-events-none');
+        if (btnText) btnText.textContent = originalText;
+    }
+
+    async function verifyPayment(rzpResponse, planId, type, originalBtnText) {
+        const modal = document.getElementById('payment-verify-modal');
+        if (modal) modal.classList.remove('hidden');
+
         const verifyForm = new FormData();
-        verifyForm.append('razorpay_order_id', rzpResponse.razorpay_order_id);
-        verifyForm.append('razorpay_payment_id', rzpResponse.razorpay_payment_id);
-        verifyForm.append('razorpay_signature', rzpResponse.razorpay_signature);
+        verifyForm.append('razorpay_order_id', rzpResponse.razorpay_order_id || '');
+        verifyForm.append('razorpay_payment_id', rzpResponse.razorpay_payment_id || '');
+        verifyForm.append('razorpay_signature', rzpResponse.razorpay_signature || '');
         verifyForm.append('plan_id', planId);
         verifyForm.append('type', type);
         verifyForm.append('csrf_token', getCsrfToken());
@@ -162,18 +227,35 @@
         try {
             const res = await fetch('/api/subscription/verify-payment', {
                 method: 'POST',
-                body: verifyForm
+                body: verifyForm,
+                headers: {
+                    'X-CSRF-TOKEN': getCsrfToken(),
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                }
             });
-            const data = await res.json();
 
-            if (data.success) {
-                showToast('Payment verified successfully! Welcome to Premium.', 'success');
-                setTimeout(() => window.location.href = '/subscription', 1200);
+            let data = null;
+            try {
+                data = await res.json();
+            } catch (jsonErr) {
+                data = null;
+            }
+
+            if (res.ok && data && data.success) {
+                showToast(data.message || 'Payment verified! Welcome to Premium.', 'success');
+                setTimeout(() => {
+                    window.location.href = data.redirect || '/subscription';
+                }, 800);
             } else {
-                showToast(data.error || 'Payment verification failed.', 'error');
+                if (modal) modal.classList.add('hidden');
+                resetButton(planId, originalBtnText);
+                showToast(data?.error || 'Payment verification failed. Please contact support.', 'error');
             }
         } catch (e) {
-            showToast('Network error during verification.', 'error');
+            if (modal) modal.classList.add('hidden');
+            resetButton(planId, originalBtnText);
+            showToast('Network error verifying payment. If amount was deducted, your perks will activate shortly.', 'error');
         }
     }
 </script>

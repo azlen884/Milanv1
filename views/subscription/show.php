@@ -165,20 +165,52 @@
         }
     }
 
+    let isProcessingBoost = false;
+
+    function ensureRazorpayScript() {
+        return new Promise((resolve, reject) => {
+            if (typeof Razorpay !== 'undefined') {
+                return resolve(true);
+            }
+            const script = document.createElement('script');
+            script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+            script.onload = () => resolve(true);
+            script.onerror = () => reject(new Error('Failed to load Razorpay Checkout script.'));
+            document.head.appendChild(script);
+        });
+    }
+
     async function purchaseBoost(priceInr) {
-        const formData = new FormData();
-        formData.append('type', 'boost');
-        formData.append('csrf_token', getCsrfToken());
+        if (isProcessingBoost) return;
+        isProcessingBoost = true;
 
         try {
+            await ensureRazorpayScript();
+
+            const formData = new FormData();
+            formData.append('type', 'boost');
+            formData.append('csrf_token', getCsrfToken());
+
             const res = await fetch('/api/subscription/create-order', {
                 method: 'POST',
-                body: formData
+                body: formData,
+                headers: {
+                    'X-CSRF-TOKEN': getCsrfToken(),
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                }
             });
-            const data = await res.json();
 
-            if (!data.success) {
-                showToast(data.error || 'Could not initiate boost payment.', 'error');
+            let data = null;
+            try {
+                data = await res.json();
+            } catch (jsonErr) {
+                data = null;
+            }
+
+            if (!res.ok || !data || !data.success) {
+                isProcessingBoost = false;
+                showToast(data?.error || 'Could not initiate boost payment. Please try again.', 'error');
                 return;
             }
 
@@ -199,6 +231,7 @@
                 },
                 modal: {
                     ondismiss: function() {
+                        isProcessingBoost = false;
                         showToast('Boost payment was cancelled.', 'error');
                     }
                 }
@@ -206,33 +239,53 @@
 
             const rzp = new Razorpay(options);
             rzp.on('payment.failed', function (resp) {
+                isProcessingBoost = false;
                 showToast(resp.error?.description || 'Payment failed. Please try again.', 'error');
             });
             rzp.open();
 
         } catch (err) {
-            showToast('Network error.', 'error');
+            isProcessingBoost = false;
+            showToast('Unable to connect to payment gateway: ' + (err.message || 'Network error.'), 'error');
         }
     }
 
     async function verifyBoostPayment(rzpResponse) {
         const verifyForm = new FormData();
-        verifyForm.append('razorpay_order_id', rzpResponse.razorpay_order_id);
-        verifyForm.append('razorpay_payment_id', rzpResponse.razorpay_payment_id);
-        verifyForm.append('razorpay_signature', rzpResponse.razorpay_signature);
+        verifyForm.append('razorpay_order_id', rzpResponse.razorpay_order_id || '');
+        verifyForm.append('razorpay_payment_id', rzpResponse.razorpay_payment_id || '');
+        verifyForm.append('razorpay_signature', rzpResponse.razorpay_signature || '');
         verifyForm.append('type', 'boost');
         verifyForm.append('csrf_token', getCsrfToken());
 
-        const res = await fetch('/api/subscription/verify-payment', {
-            method: 'POST',
-            body: verifyForm
-        });
-        const data = await res.json();
-        if (data.success) {
-            showToast('Boost activated successfully!', 'success');
-            setTimeout(() => window.location.reload(), 1200);
-        } else {
-            showToast(data.error || 'Payment verification failed.', 'error');
+        try {
+            const res = await fetch('/api/subscription/verify-payment', {
+                method: 'POST',
+                body: verifyForm,
+                headers: {
+                    'X-CSRF-TOKEN': getCsrfToken(),
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                }
+            });
+
+            let data = null;
+            try {
+                data = await res.json();
+            } catch (jsonErr) {
+                data = null;
+            }
+
+            isProcessingBoost = false;
+            if (res.ok && data && data.success) {
+                showToast(data.message || 'Boost activated successfully!', 'success');
+                setTimeout(() => window.location.reload(), 1000);
+            } else {
+                showToast(data?.error || 'Payment verification failed.', 'error');
+            }
+        } catch (e) {
+            isProcessingBoost = false;
+            showToast('Network error during boost verification.', 'error');
         }
     }
 </script>

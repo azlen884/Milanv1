@@ -4,6 +4,13 @@ namespace App\Helpers;
 
 class Auth {
     private static ?array $cachedUser = null;
+    private static array $cachedSubscriptions = [];
+    private static array $lastActiveUpdated = [];
+
+    public static function clearCache(): void {
+        self::$cachedUser = null;
+        self::$cachedSubscriptions = [];
+    }
 
     public static function check(): bool {
         return self::id() !== null;
@@ -17,7 +24,7 @@ class Auth {
     public static function login(int $userId): void {
         Session::regenerate();
         Session::set('user_id', $userId);
-        self::$cachedUser = null;
+        self::clearCache();
         self::updateLastActive($userId);
     }
 
@@ -28,7 +35,7 @@ class Auth {
         }
         Session::remove('user_id');
         Session::destroy();
-        self::$cachedUser = null;
+        self::clearCache();
     }
 
     public static function user(): ?array {
@@ -78,6 +85,11 @@ class Auth {
     }
 
     public static function updateLastActive(int $userId): void {
+        $now = time();
+        if (isset(self::$lastActiveUpdated[$userId]) && ($now - self::$lastActiveUpdated[$userId] < 30)) {
+            return;
+        }
+        self::$lastActiveUpdated[$userId] = $now;
         Database::execute(
             "UPDATE users SET last_active_at = NOW() WHERE id = :id",
             [':id' => $userId]
@@ -85,6 +97,10 @@ class Auth {
     }
 
     public static function getSubscription(int $userId): array {
+        if (isset(self::$cachedSubscriptions[$userId])) {
+            return self::$cachedSubscriptions[$userId];
+        }
+
         $sql = "SELECT s.id as subscription_id, s.starts_at, s.expires_at, s.status,
                        p.id as plan_id, p.code, p.name, p.price_inr, p.daily_messages_limit,
                        p.can_view_visitors, p.includes_boost
@@ -97,12 +113,13 @@ class Auth {
 
         $sub = Database::one($sql, [':user_id' => $userId]);
         if ($sub) {
+            self::$cachedSubscriptions[$userId] = $sub;
             return $sub;
         }
 
         // Fallback to Free plan if none active or expired
         $freePlan = Database::one("SELECT * FROM subscription_plans WHERE code = 'free' LIMIT 1");
-        return [
+        $result = [
             'subscription_id' => 0,
             'starts_at' => date('Y-m-d H:i:s'),
             'expires_at' => date('Y-m-d H:i:s', strtotime('+100 years')),
@@ -115,6 +132,8 @@ class Auth {
             'can_view_visitors' => 0,
             'includes_boost' => 0,
         ];
+        self::$cachedSubscriptions[$userId] = $result;
+        return $result;
     }
 
     public static function getDailySentMessagesCount(int $userId): int {

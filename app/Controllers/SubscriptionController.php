@@ -191,18 +191,84 @@ class SubscriptionController {
         $orderId = trim($_POST['razorpay_order_id'] ?? '');
         $paymentId = trim($_POST['razorpay_payment_id'] ?? '');
         $signature = trim($_POST['razorpay_signature'] ?? '');
-        $planId = (int)($_POST['plan_id'] ?? 0);
-        $type = $_POST['type'] ?? 'subscription';
+        $planIdInput = (int)($_POST['plan_id'] ?? 0);
+        $typeInput = trim($_POST['type'] ?? '');
 
         if (empty($orderId) || empty($paymentId) || empty($signature)) {
             View::json(['success' => false, 'error' => 'Missing payment parameters.'], 400);
         }
 
+        // 1. Fetch the original order record from the database
+        $orderRecord = Database::one(
+            "SELECT * FROM payments WHERE razorpay_order_id = :oid LIMIT 1",
+            [':oid' => $orderId]
+        );
+
+        if (!$orderRecord) {
+            View::json(['success' => false, 'error' => 'Payment order record was not found.'], 404);
+        }
+
+        // 2. Verify order belongs to the logged-in user
+        if ((int)$orderRecord['user_id'] !== (int)$user['id']) {
+            error_log("[Security] Order user mismatch: Order belongs to user {$orderRecord['user_id']}, but current session is user {$user['id']}");
+            View::json(['success' => false, 'error' => 'Unauthorized order ownership.'], 403);
+        }
+
+        // 3. Determine and verify payment type
+        $type = $orderRecord['payment_type'] ?: ($typeInput ?: 'subscription');
+        if ($typeInput && $orderRecord['payment_type'] && $typeInput !== $orderRecord['payment_type']) {
+            View::json(['success' => false, 'error' => 'Payment type mismatch.'], 400);
+        }
+
+        // 4. Verify Plan / Amount
+        $planId = (int)($orderRecord['plan_id'] ?: $planIdInput);
+        $expectedAmountPaisa = 0;
+
+        if ($type === 'subscription') {
+            $plan = Database::one(
+                "SELECT id, price_inr FROM subscription_plans WHERE id = :id AND is_active = 1 AND code != 'free'",
+                [':id' => $planId]
+            );
+            if (!$plan) {
+                View::json(['success' => false, 'error' => 'Invalid or inactive subscription plan.'], 400);
+            }
+            $expectedAmountPaisa = ((int)$plan['price_inr']) * 100;
+        } elseif ($type === 'boost') {
+            $boostPrice = (int)(Database::one("SELECT setting_value FROM settings WHERE setting_key = 'boost_price_inr'")['setting_value'] ?? 19);
+            $expectedAmountPaisa = $boostPrice * 100;
+        }
+
+        if ((int)$orderRecord['amount_paisa'] !== $expectedAmountPaisa) {
+            error_log("[Security] Amount mismatch: DB order has {$orderRecord['amount_paisa']}, expected {$expectedAmountPaisa}");
+            View::json(['success' => false, 'error' => 'Payment amount discrepancy detected.'], 400);
+        }
+
+        // 5. Idempotent check: if already captured, return success immediately
+        if ($orderRecord['status'] === 'captured' && $orderRecord['razorpay_payment_id'] === $paymentId) {
+            Auth::clearCache();
+            Session::flash('success', 'Payment confirmed! Your benefits are active.');
+            View::json([
+                'success' => true,
+                'message' => 'Payment already verified successfully.',
+                'redirect' => ($type === 'boost') ? '/discover' : '/subscription',
+            ]);
+        }
+
+        // 6. Verify Payment ID is not reused on another order
+        $reuseCheck = Database::one(
+            "SELECT id, razorpay_order_id FROM payments WHERE razorpay_payment_id = :pid AND razorpay_order_id != :oid LIMIT 1",
+            [':pid' => $paymentId, ':oid' => $orderId]
+        );
+        if ($reuseCheck) {
+            error_log("[Security] Duplicate payment ID {$paymentId} attempted for order {$orderId}");
+            View::json(['success' => false, 'error' => 'This payment ID has already been processed for another transaction.'], 400);
+        }
+
+        // 7. Verify HMAC-SHA256 signature
         $rzp = new RazorpayService();
         $isValid = $rzp->verifyPaymentSignature($orderId, $paymentId, $signature);
 
         if (!$isValid) {
-            // Mark payment as failed in records
             Database::execute(
                 "UPDATE payments SET status = 'failed', razorpay_payment_id = :pid WHERE razorpay_order_id = :oid",
                 [':pid' => $paymentId, ':oid' => $orderId]
@@ -210,36 +276,110 @@ class SubscriptionController {
             View::json(['success' => false, 'error' => 'Payment verification signature failed.'], 400);
         }
 
-        // Amount calculation
-        $amountPaisa = 0;
-        if ($type === 'subscription') {
-            $plan = Database::one("SELECT price_inr FROM subscription_plans WHERE id = :id", [':id' => $planId]);
-            $amountPaisa = ((int)($plan['price_inr'] ?? 0)) * 100;
-        } else {
-            $boostPrice = (int)(Database::one("SELECT setting_value FROM settings WHERE setting_key = 'boost_price_inr'")['setting_value'] ?? 19);
-            $amountPaisa = $boostPrice * 100;
+        // 8. Optional/Direct gateway verification via Razorpay REST API
+        $apiPayment = $rzp->fetchPayment($paymentId);
+        if ($apiPayment) {
+            $apiStatus = $apiPayment['status'] ?? '';
+            $apiOrder = $apiPayment['order_id'] ?? '';
+            $apiAmount = (int)($apiPayment['amount'] ?? 0);
+
+            if (!in_array($apiStatus, ['captured', 'authorized'], true)) {
+                Database::execute(
+                    "UPDATE payments SET status = 'failed', razorpay_payment_id = :pid WHERE razorpay_order_id = :oid",
+                    [':pid' => $paymentId, ':oid' => $orderId]
+                );
+                View::json(['success' => false, 'error' => "Payment status is {$apiStatus}, not captured."], 400);
+            }
+
+            if (!empty($apiOrder) && $apiOrder !== $orderId) {
+                View::json(['success' => false, 'error' => 'Payment gateway order mismatch.'], 400);
+            }
+
+            if ($apiAmount > 0 && $apiAmount !== $expectedAmountPaisa) {
+                View::json(['success' => false, 'error' => 'Payment gateway amount mismatch.'], 400);
+            }
         }
 
+        // 9. Process payment and activate benefits atomically
         $processed = $rzp->processVerifiedPayment(
             $user['id'],
             $planId,
             $orderId,
             $paymentId,
             $signature,
-            $amountPaisa,
+            $expectedAmountPaisa,
             $type
         );
 
         if ($processed) {
-            Session::flash('success', 'Payment successful! Your premium perks are now active.');
+            Auth::clearCache();
+            $redirectUrl = ($type === 'boost') ? '/discover' : '/subscription';
+            $msg = ($type === 'boost') 
+                ? 'Payment successful! Your profile Boost is now active for 24 hours.' 
+                : 'Payment verified successfully! Welcome to Milan Premium.';
+            Session::flash('success', $msg);
             View::json([
                 'success' => true,
-                'message' => 'Payment verified and plan activated!',
-                'redirect' => '/subscription',
+                'message' => $msg,
+                'redirect' => $redirectUrl,
             ]);
         } else {
-            View::json(['success' => false, 'error' => 'Failed to activate plan.'], 500);
+            View::json(['success' => false, 'error' => 'Payment was received but activating your perks encountered an error. Please contact support.'], 500);
         }
+    }
+
+    /**
+     * Razorpay Webhook Handler
+     */
+    public function webhook(): void {
+        $payload = file_get_contents('php://input');
+        $signature = $_SERVER['HTTP_X_RAZORPAY_SIGNATURE'] ?? '';
+
+        if (empty($payload)) {
+            View::json(['status' => 'empty_payload'], 400);
+        }
+
+        $rzp = new RazorpayService();
+        if (!empty($signature)) {
+            if (!$rzp->verifyWebhookSignature($payload, $signature)) {
+                View::json(['error' => 'Invalid webhook signature'], 400);
+            }
+        }
+
+        $data = json_decode($payload, true);
+        $event = $data['event'] ?? '';
+
+        if ($event === 'payment.captured' || $event === 'order.paid') {
+            $paymentEntity = $data['payload']['payment']['entity'] ?? [];
+            $paymentId = $paymentEntity['id'] ?? '';
+            $orderId = $paymentEntity['order_id'] ?? '';
+            $amount = (int)($paymentEntity['amount'] ?? 0);
+
+            if ($orderId && $paymentId) {
+                $orderRecord = Database::one(
+                    "SELECT * FROM payments WHERE razorpay_order_id = :oid LIMIT 1",
+                    [':oid' => $orderId]
+                );
+
+                if ($orderRecord && $orderRecord['status'] !== 'captured') {
+                    $userId = (int)$orderRecord['user_id'];
+                    $planId = (int)($orderRecord['plan_id'] ?? 0);
+                    $type = $orderRecord['payment_type'] ?? 'subscription';
+
+                    $rzp->processVerifiedPayment(
+                        $userId,
+                        $planId,
+                        $orderId,
+                        $paymentId,
+                        'webhook_verified',
+                        $amount,
+                        $type
+                    );
+                }
+            }
+        }
+
+        View::json(['status' => 'success']);
     }
 
     /**

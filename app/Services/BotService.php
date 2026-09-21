@@ -6,6 +6,8 @@ use App\Helpers\Database;
 use App\Helpers\Security;
 
 class BotService {
+    private static array $lastChecked = [];
+
     /**
      * Process bot messages for a specific user (only free users; stops for paid users)
      */
@@ -14,9 +16,22 @@ class BotService {
             return;
         }
 
+        // Throttle checks to at most once every 60 seconds per user
+        $now = time();
+        if (isset(self::$lastChecked[$userId]) && ($now - self::$lastChecked[$userId] < 60)) {
+            return;
+        }
+        if (isset($_SESSION['last_bot_check_' . $userId]) && ($now - (int)$_SESSION['last_bot_check_' . $userId] < 60)) {
+            return;
+        }
+        self::$lastChecked[$userId] = $now;
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            $_SESSION['last_bot_check_' . $userId] = $now;
+        }
+
         // CRITICAL: Stop all bot messages if the user has an active paid subscription
         $paidSub = Database::one(
-            "SELECT id FROM user_subscriptions 
+            "SELECT id FROM subscriptions 
              WHERE user_id = :uid 
                AND status = 'active' 
                AND plan_id > 1 

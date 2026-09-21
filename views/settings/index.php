@@ -398,11 +398,62 @@
 </div>
 
 <script>
+    async function compressImageIfLarge(file) {
+        if (!file.type.startsWith('image/') || typeof document.createElement('canvas').getContext !== 'function') {
+            return file;
+        }
+        // If file is already smaller than 1.5MB, no compression needed
+        if (file.size <= 1.5 * 1024 * 1024) {
+            return file;
+        }
+
+        return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    const maxDimension = 1920;
+                    let width = img.width;
+                    let height = img.height;
+
+                    if (width > maxDimension || height > maxDimension) {
+                        if (width > height) {
+                            height = Math.round((height * maxDimension) / width);
+                            width = maxDimension;
+                        } else {
+                            width = Math.round((width * maxDimension) / height);
+                            height = maxDimension;
+                        }
+                    }
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    canvas.toBlob((blob) => {
+                        if (blob && blob.size < file.size) {
+                            const newFilename = file.name.replace(/\.[^/.]+$/, "") + ".jpg";
+                            resolve(new File([blob], newFilename, { type: 'image/jpeg' }));
+                        } else {
+                            resolve(file);
+                        }
+                    }, 'image/jpeg', 0.88);
+                };
+                img.onerror = () => resolve(file);
+                img.src = e.target.result;
+            };
+            reader.onerror = () => resolve(file);
+            reader.readAsDataURL(file);
+        });
+    }
+
     async function uploadPhoto(input) {
         if (!input.files || !input.files[0]) return;
         if (input.dataset.uploading === '1') return;
 
-        const file = input.files[0];
+        let file = input.files[0];
         
         // Client-side quick checks
         const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
@@ -421,40 +472,58 @@
         input.dataset.uploading = '1';
         const label = document.getElementById('upload-photo-label');
         const text = document.getElementById('upload-text');
-        const icon = document.getElementById('upload-icon');
         const originalText = text ? text.textContent : 'Upload Photo';
 
         if (label) {
             label.classList.add('opacity-70', 'pointer-events-none');
         }
         if (text) {
-            text.textContent = 'Uploading...';
+            text.textContent = 'Optimizing...';
         }
 
-        const formData = new FormData();
-        formData.append('photo', file);
-        formData.append('csrf_token', getCsrfToken());
-
         try {
+            // Compress if smartphone photo > 1.5MB
+            file = await compressImageIfLarge(file);
+
+            if (text) {
+                text.textContent = 'Uploading...';
+            }
+
+            const formData = new FormData();
+            formData.append('photo', file);
+            formData.append('csrf_token', getCsrfToken());
+
             const res = await fetch('/api/photos/upload', {
                 method: 'POST',
                 body: formData,
                 headers: {
+                    'X-CSRF-TOKEN': getCsrfToken(),
                     'X-Requested-With': 'XMLHttpRequest',
                     'Accept': 'application/json'
                 }
             });
 
-            const data = await res.json().catch(() => null);
+            let data = null;
+            try {
+                data = await res.json();
+            } catch (jsonErr) {
+                data = null;
+            }
 
             if (res.ok && data && data.success) {
                 showToast(data.message || 'Photo uploaded successfully.', 'success');
                 setTimeout(() => window.location.reload(), 600);
             } else {
-                showToast(data?.error || data?.message || 'Failed to upload photo. Please try again.', 'error');
+                if (res.status === 413) {
+                    showToast('Photo is too large for the server. Please select a smaller photo.', 'error');
+                } else if (res.status === 403) {
+                    showToast('Security session expired. Please refresh the page.', 'error');
+                } else {
+                    showToast(data?.error || data?.message || 'Failed to upload photo. Please try again.', 'error');
+                }
             }
         } catch (e) {
-            showToast('Unable to upload photo. Please check your internet connection.', 'error');
+            showToast('Unable to upload photo: ' + (e.message || 'Network error.'), 'error');
         } finally {
             input.value = '';
             delete input.dataset.uploading;
