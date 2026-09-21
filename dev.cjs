@@ -2,7 +2,7 @@ const { spawn } = require('child_process');
 
 console.log('[Dev Server] Starting MariaDB service check...');
 try {
-  spawn('sh', ['-c', 'mysqladmin ping >/dev/null 2>&1 || (mkdir -p /var/run/mysqld && chown -R mysql:mysql /var/run/mysqld /var/lib/mysql && mariadbd --user=mysql --datadir=/var/lib/mysql >/dev/null 2>&1 &)'], {
+  spawn('sh', ['-c', 'mariadb-admin ping >/dev/null 2>&1 || (mkdir -p /var/run/mysqld && chown -R mysql:mysql /var/run/mysqld /var/lib/mysql && /usr/bin/mariadbd-safe --datadir=/var/lib/mysql --nowatch >/dev/null 2>&1 &)'], {
     detached: true,
     stdio: 'ignore'
   }).unref();

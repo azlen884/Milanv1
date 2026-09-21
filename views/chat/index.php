@@ -540,6 +540,29 @@
         ]
     };
 
+    // Strict RFC 4566 / RFC 8866 compliant SDP normalizer and repairer
+    function sanitizeSdp(sdp) {
+        if (!sdp || typeof sdp !== 'string') return '';
+        const rawLines = sdp.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+        const validLines = [];
+
+        for (let i = 0; i < rawLines.length; i++) {
+            let line = rawLines[i].trim();
+            if (!line) continue;
+
+            // SDP lines must start with a single letter followed immediately by '='
+            if (/^[a-zA-Z]=/.test(line)) {
+                validLines.push(line);
+            } else if (validLines.length > 0) {
+                // Continuation line caused by unintentional line-wrap in transport or database
+                console.warn('[WebRTC] Reconnecting split SDP line to preceding attribute:', line);
+                validLines[validLines.length - 1] += ' ' + line;
+            }
+        }
+
+        return validLines.join('\r\n') + '\r\n';
+    }
+
     // Caller Starts Video Call
     async function startVideoCall() {
         if (!convId || !activePartnerId) return;
@@ -592,14 +615,23 @@
             const offer = await peerConnection.createOffer();
             await peerConnection.setLocalDescription(offer);
 
+            const cleanOfferSdp = sanitizeSdp(offer.sdp);
+
             // 5. Send Offer to Signaling Server
             const formData = new FormData();
             formData.append('conversation_id', convId);
-            formData.append('sdp_offer', offer.sdp);
+            formData.append('sdp_offer', cleanOfferSdp);
             formData.append('candidates', JSON.stringify(localCandidates));
             formData.append('csrf_token', getCsrfToken());
 
-            const res = await fetch('/api/call/start', { method: 'POST', body: formData });
+            const res = await fetch('/api/call/start', { 
+                method: 'POST', 
+                body: formData,
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                }
+            });
             const data = await res.json();
 
             if (!data.success) {
@@ -653,16 +685,22 @@
                 }
 
                 if (isCaller && data.status === 'accepted' && peerConnection) {
-                    if (peerConnection.signalingState === 'have-local-offer' && data.call.sdp_answer) {
-                        const answer = new RTCSessionDescription({ type: 'answer', sdp: data.call.sdp_answer });
+                    if (peerConnection.signalingState === 'have-local-offer' && data.call && data.call.sdp_answer) {
+                        const cleanAnswerSdp = sanitizeSdp(data.call.sdp_answer);
+                        console.log('[WebRTC] Applying remote answer for call #' + callId);
+                        const answer = new RTCSessionDescription({ type: 'answer', sdp: cleanAnswerSdp });
                         await peerConnection.setRemoteDescription(answer);
 
                         // Add receiver candidates
                         if (data.call.receiver_candidates) {
                             try {
                                 const cands = JSON.parse(data.call.receiver_candidates);
-                                cands.forEach(c => peerConnection.addIceCandidate(new RTCIceCandidate(c)));
-                            } catch (e) {}
+                                cands.forEach(c => {
+                                    if (c) peerConnection.addIceCandidate(new RTCIceCandidate(c));
+                                });
+                            } catch (e) {
+                                console.warn('[WebRTC] Error parsing receiver candidates:', e);
+                            }
                         }
 
                         // Connected!
@@ -715,7 +753,14 @@
         formData.append('action', 'reject');
         formData.append('csrf_token', getCsrfToken());
         try {
-            fetch('/api/call/respond', { method: 'POST', body: formData });
+            fetch('/api/call/respond', { 
+                method: 'POST', 
+                body: formData,
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                }
+            });
         } catch (e) {}
     }
 
@@ -752,29 +797,48 @@
             };
 
             // Set remote offer
-            await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: call.sdp_offer }));
+            if (!call || !call.sdp_offer) {
+                throw new Error('Signaling offer SDP is missing or invalid.');
+            }
+
+            const cleanOfferSdp = sanitizeSdp(call.sdp_offer);
+            console.log('[WebRTC] Applying remote offer for call #' + currentCallId);
+            await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: cleanOfferSdp }));
 
             // Add caller candidates
             if (call.caller_candidates) {
                 try {
                     const cands = JSON.parse(call.caller_candidates);
-                    cands.forEach(c => peerConnection.addIceCandidate(new RTCIceCandidate(c)));
-                } catch (e) {}
+                    cands.forEach(c => {
+                        if (c) peerConnection.addIceCandidate(new RTCIceCandidate(c));
+                    });
+                } catch (e) {
+                    console.warn('[WebRTC] Error parsing caller candidates:', e);
+                }
             }
 
             // Create Answer
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
 
+            const cleanAnswerSdp = sanitizeSdp(answer.sdp);
+
             // Send Answer
             const formData = new FormData();
             formData.append('call_id', currentCallId);
             formData.append('action', 'accept');
-            formData.append('sdp_answer', answer.sdp);
+            formData.append('sdp_answer', cleanAnswerSdp);
             formData.append('candidates', JSON.stringify(localCandidates));
             formData.append('csrf_token', getCsrfToken());
 
-            const res = await fetch('/api/call/respond', { method: 'POST', body: formData });
+            const res = await fetch('/api/call/respond', { 
+                method: 'POST', 
+                body: formData,
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                }
+            });
             const data = await res.json();
 
             if (data.success) {

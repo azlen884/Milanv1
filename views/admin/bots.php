@@ -161,12 +161,14 @@
             </button>
         </div>
 
-        <form action="/admin/bots/create" method="POST" enctype="multipart/form-data" class="space-y-4 pt-4">
+        <div id="create-bot-error" class="hidden p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs font-medium"></div>
+
+        <form id="create-bot-form" action="/admin/bots/create" method="POST" enctype="multipart/form-data" class="space-y-4 pt-4">
             <input type="hidden" name="csrf_token" value="<?= $csrfToken ?>">
 
             <div>
                 <label class="block text-xs font-semibold text-slate-700 mb-1">Bot Name *</label>
-                <input type="text" name="name" required placeholder="e.g. Priya Sharma" class="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none">
+                <input type="text" name="name" id="bot-name-input" required placeholder="e.g. Priya Sharma" class="w-full px-3.5 py-2.5 text-sm border border-slate-200 rounded-xl focus:ring-2 focus:ring-rose-500 focus:outline-none">
             </div>
 
             <div class="grid grid-cols-2 gap-3">
@@ -195,7 +197,7 @@
 
             <div>
                 <label class="block text-xs font-semibold text-slate-700 mb-1">Avatar / Profile Photo</label>
-                <input type="file" name="photo" accept="image/jpeg,image/png,image/webp" class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-rose-50 file:text-rose-700 hover:file:bg-rose-100">
+                <input type="file" name="photo" id="bot-photo-input" accept="image/jpeg,image/png,image/webp" class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-rose-50 file:text-rose-700 hover:file:bg-rose-100">
                 <p class="text-[11px] text-slate-400 mt-1">Optional. Defaults to a standard high-quality avatar if left empty.</p>
             </div>
 
@@ -214,10 +216,80 @@
                 <button type="button" onclick="document.getElementById('create-bot-modal').classList.add('hidden')" class="px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors">
                     Cancel
                 </button>
-                <button type="submit" class="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold rounded-xl shadow-xs transition-colors">
-                    Create Bot
+                <button type="submit" id="create-bot-submit-btn" class="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold rounded-xl shadow-xs transition-colors flex items-center gap-2">
+                    <span>Create Bot</span>
                 </button>
             </div>
         </form>
     </div>
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const form = document.getElementById('create-bot-form');
+    if (!form) return;
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const errBox = document.getElementById('create-bot-error');
+        const submitBtn = document.getElementById('create-bot-submit-btn');
+        const nameInput = document.getElementById('bot-name-input');
+
+        if (errBox) {
+            errBox.classList.add('hidden');
+            errBox.textContent = '';
+        }
+
+        if (!nameInput || !nameInput.value.trim()) {
+            if (errBox) {
+                errBox.textContent = 'Bot Name is required.';
+                errBox.classList.remove('hidden');
+            }
+            return;
+        }
+
+        const origBtnHtml = submitBtn.innerHTML;
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span>Creating Bot...</span>';
+
+        try {
+            const formData = new FormData(form);
+            formData.append('is_ajax', '1');
+
+            const res = await fetch('/admin/bots/create', {
+                method: 'POST',
+                body: formData,
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                }
+            });
+
+            const data = await res.json().catch(() => null);
+
+            if (res.ok && data && data.success) {
+                window.location.reload();
+            } else {
+                const errMsg = data?.error || data?.message || ('Server error (HTTP ' + res.status + ')');
+                if (errBox) {
+                    errBox.textContent = errMsg;
+                    errBox.classList.remove('hidden');
+                } else {
+                    alert('Error: ' + errMsg);
+                }
+            }
+        } catch (err) {
+            console.error('Bot creation request failed:', err);
+            if (errBox) {
+                errBox.textContent = 'Network error or connection failed. Please try again.';
+                errBox.classList.remove('hidden');
+            } else {
+                alert('Connection error. Please try again.');
+            }
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = origBtnHtml;
+        }
+    });
+});
+</script>

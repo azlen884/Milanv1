@@ -17,17 +17,34 @@ class CallController {
             View::json(['success' => false, 'error' => 'Authentication required.'], 401);
         }
 
-        $csrf = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+        $input = [];
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (str_contains($contentType, 'application/json')) {
+            $rawInput = file_get_contents('php://input');
+            $input = json_decode($rawInput, true) ?: [];
+        }
+
+        $csrf = $input['csrf_token'] ?? $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
         if (!Session::verifyCsrf($csrf)) {
             View::json(['success' => false, 'error' => 'Invalid security token.'], 403);
         }
 
-        $convId = (int)($_POST['conversation_id'] ?? 0);
-        $sdpOffer = trim($_POST['sdp_offer'] ?? '');
-        $candidates = trim($_POST['candidates'] ?? '[]');
+        $convId = (int)($input['conversation_id'] ?? $_POST['conversation_id'] ?? 0);
+        $sdpOffer = $input['sdp_offer'] ?? $_POST['sdp_offer'] ?? '';
+        if (is_array($sdpOffer)) {
+            $sdpOffer = $sdpOffer['sdp'] ?? '';
+        }
+        if (is_string($sdpOffer) && !empty($sdpOffer)) {
+            $sdpOffer = preg_replace("/\r\n|\r|\n/", "\r\n", rtrim($sdpOffer, "\r\n\t ")) . "\r\n";
+        }
+
+        $candidates = $input['candidates'] ?? $_POST['candidates'] ?? '[]';
+        if (is_array($candidates)) {
+            $candidates = json_encode($candidates);
+        }
 
         if ($convId <= 0 || empty($sdpOffer)) {
-            View::json(['success' => false, 'error' => 'Invalid call request parameters.'], 400);
+            View::json(['success' => false, 'error' => 'Invalid call request parameters: missing conversation or SDP offer.'], 400);
         }
 
         // Validate conversation & participant
@@ -181,15 +198,32 @@ class CallController {
             View::json(['success' => false, 'error' => 'Authentication required.'], 401);
         }
 
-        $csrf = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+        $input = [];
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (str_contains($contentType, 'application/json')) {
+            $rawInput = file_get_contents('php://input');
+            $input = json_decode($rawInput, true) ?: [];
+        }
+
+        $csrf = $input['csrf_token'] ?? $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
         if (!Session::verifyCsrf($csrf)) {
             View::json(['success' => false, 'error' => 'Invalid security token.'], 403);
         }
 
-        $callId = (int)($_POST['call_id'] ?? 0);
-        $action = $_POST['action'] ?? ''; // 'accept' or 'reject'
-        $sdpAnswer = trim($_POST['sdp_answer'] ?? '');
-        $candidates = trim($_POST['candidates'] ?? '[]');
+        $callId = (int)($input['call_id'] ?? $_POST['call_id'] ?? 0);
+        $action = trim((string)($input['action'] ?? $_POST['action'] ?? '')); // 'accept' or 'reject'
+        $sdpAnswer = $input['sdp_answer'] ?? $_POST['sdp_answer'] ?? '';
+        if (is_array($sdpAnswer)) {
+            $sdpAnswer = $sdpAnswer['sdp'] ?? '';
+        }
+        if (is_string($sdpAnswer) && !empty($sdpAnswer)) {
+            $sdpAnswer = preg_replace("/\r\n|\r|\n/", "\r\n", rtrim($sdpAnswer, "\r\n\t ")) . "\r\n";
+        }
+
+        $candidates = $input['candidates'] ?? $_POST['candidates'] ?? '[]';
+        if (is_array($candidates)) {
+            $candidates = json_encode($candidates);
+        }
 
         if ($callId <= 0 || !in_array($action, ['accept', 'reject'], true)) {
             View::json(['success' => false, 'error' => 'Invalid parameters.'], 400);
@@ -234,11 +268,30 @@ class CallController {
             View::json(['success' => false, 'error' => 'Authentication required.'], 401);
         }
 
-        $callId = (int)($_POST['call_id'] ?? 0);
-        $candidateJson = trim($_POST['candidate'] ?? '');
+        $input = [];
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (str_contains($contentType, 'application/json')) {
+            $rawInput = file_get_contents('php://input');
+            $input = json_decode($rawInput, true) ?: [];
+        }
 
-        if ($callId <= 0 || empty($candidateJson)) {
-            View::json(['success' => false, 'error' => 'Invalid parameters.'], 400);
+        $csrf = $input['csrf_token'] ?? $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+        if (!Session::verifyCsrf($csrf)) {
+            View::json(['success' => false, 'error' => 'Invalid security token.'], 403);
+        }
+
+        $callId = (int)($input['call_id'] ?? $_POST['call_id'] ?? 0);
+        $candidate = $input['candidate'] ?? $_POST['candidate'] ?? null;
+        if (is_string($candidate)) {
+            $candidateObj = json_decode($candidate, true);
+        } elseif (is_array($candidate)) {
+            $candidateObj = $candidate;
+        } else {
+            $candidateObj = null;
+        }
+
+        if ($callId <= 0 || empty($candidateObj)) {
+            View::json(['success' => false, 'error' => 'Invalid candidate parameters.'], 400);
         }
 
         $call = Database::one(
@@ -250,11 +303,6 @@ class CallController {
 
         if (!$call) {
             View::json(['success' => false, 'error' => 'Call not found.'], 404);
-        }
-
-        $candidateObj = json_decode($candidateJson, true);
-        if (!$candidateObj) {
-            View::json(['success' => false, 'error' => 'Invalid candidate JSON.'], 400);
         }
 
         if ($call['caller_id'] === $user['id']) {
@@ -285,7 +333,19 @@ class CallController {
             View::json(['success' => false, 'error' => 'Authentication required.'], 401);
         }
 
-        $callId = (int)($_POST['call_id'] ?? 0);
+        $input = [];
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        if (str_contains($contentType, 'application/json')) {
+            $rawInput = file_get_contents('php://input');
+            $input = json_decode($rawInput, true) ?: [];
+        }
+
+        $csrf = $input['csrf_token'] ?? $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+        if (!Session::verifyCsrf($csrf)) {
+            View::json(['success' => false, 'error' => 'Invalid security token.'], 403);
+        }
+
+        $callId = (int)($input['call_id'] ?? $_POST['call_id'] ?? 0);
         if ($callId <= 0) {
             View::json(['success' => false, 'error' => 'Invalid call ID.'], 400);
         }

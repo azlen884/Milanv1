@@ -1272,7 +1272,15 @@ class AdminController {
     public function createBot(): void {
         $this->ensureSuperAdmin();
 
-        if (!Session::verifyCsrf($_POST['csrf_token'] ?? '')) {
+        $isAjax = (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') 
+               || str_contains($_SERVER['HTTP_ACCEPT'] ?? '', 'application/json')
+               || isset($_POST['is_ajax']);
+
+        $csrf = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+        if (!Session::verifyCsrf($csrf)) {
+            if ($isAjax) {
+                View::json(['success' => false, 'error' => 'Invalid or expired security token. Please refresh the page.'], 403);
+            }
             Session::flash('error', 'Invalid security token.');
             header('Location: /admin/bots');
             exit;
@@ -1282,100 +1290,178 @@ class AdminController {
         $age = max(18, min(80, (int)($_POST['age'] ?? 24)));
         $gender = in_array($_POST['gender'] ?? '', ['male', 'female'], true) ? $_POST['gender'] : 'female';
         $city = trim($_POST['city'] ?? 'Mumbai');
-        $bio = trim($_POST['bio'] ?? 'Hello! Nice to meet you here on Milan Dating.');
+        $bio = trim($_POST['bio'] ?? 'Hello! Looking to meet genuine people on Milan Dating.');
         $initialMessage = trim($_POST['initial_message'] ?? '');
-        $initialDelay = max(0, (int)($_POST['initial_delay_minutes'] ?? 0));
+        $initialDelay = max(0, min(10080, (int)($_POST['initial_delay_minutes'] ?? 0)));
 
         if (empty($name)) {
-            Session::flash('error', 'Bot name is required.');
+            $msg = 'Bot name is required and cannot be empty.';
+            if ($isAjax) {
+                View::json(['success' => false, 'error' => $msg], 400);
+            }
+            Session::flash('error', $msg);
             header('Location: /admin/bots');
             exit;
         }
 
         // Handle avatar photo upload
-        $avatarUrl = '/uploads/profiles/default_female.jpg';
-        if ($gender === 'male') {
-            $avatarUrl = '/uploads/profiles/default_male.jpg';
-        }
+        $avatarUrl = ($gender === 'male') ? '/uploads/profiles/default_male.jpg' : '/uploads/profiles/default_female.jpg';
 
         if (isset($_FILES['photo']) && !empty($_FILES['photo']['tmp_name'])) {
             $val = Security::validateUpload($_FILES['photo'], ['image/jpeg', 'image/png', 'image/webp'], 15 * 1024 * 1024);
-            if ($val['valid']) {
-                $uploadDir = dirname(__DIR__, 2) . '/public/uploads/profiles';
-                if (!is_dir($uploadDir)) {
-                    mkdir($uploadDir, 0775, true);
+            if (!$val['valid']) {
+                $errorMsg = $val['error'] ?? 'Invalid profile photo uploaded.';
+                if ($isAjax) {
+                    View::json(['success' => false, 'error' => $errorMsg], 400);
                 }
-                $ext = match ($val['mime']) {
-                    'image/png' => 'png',
-                    'image/webp' => 'webp',
-                    default => 'jpg',
-                };
-                $filename = Security::randomFilename($ext);
-                $target = $uploadDir . '/' . $filename;
-                if (move_uploaded_file($_FILES['photo']['tmp_name'], $target) || copy($_FILES['photo']['tmp_name'], $target)) {
-                    $avatarUrl = '/uploads/profiles/' . $filename;
+                Session::flash('error', $errorMsg);
+                header('Location: /admin/bots');
+                exit;
+            }
+
+            $uploadDir = dirname(__DIR__, 2) . '/public/uploads/profiles';
+            if (!is_dir($uploadDir)) {
+                mkdir($uploadDir, 0775, true);
+            }
+
+            $ext = match ($val['mime']) {
+                'image/png' => 'png',
+                'image/webp' => 'webp',
+                default => 'jpg',
+            };
+            $filename = Security::randomFilename($ext);
+            $target = $uploadDir . '/' . $filename;
+
+            if (move_uploaded_file($_FILES['photo']['tmp_name'], $target) || copy($_FILES['photo']['tmp_name'], $target)) {
+                $avatarUrl = '/uploads/profiles/' . $filename;
+            } else {
+                $errorMsg = 'Failed to save uploaded photo to storage. Check directory permissions.';
+                if ($isAjax) {
+                    View::json(['success' => false, 'error' => $errorMsg], 500);
                 }
+                Session::flash('error', $errorMsg);
+                header('Location: /admin/bots');
+                exit;
             }
         }
 
-        // 1. Create real user account for bot
-        $email = 'bot_' . bin2hex(random_bytes(6)) . '@milan.internal';
-        $passwordHash = Security::hashPassword(bin2hex(random_bytes(16)));
+        // Perform Database Inserts within a PDO Transaction
+        $pdo = Database::connect();
+        try {
+            $pdo->beginTransaction();
 
-        $userId = Database::insert(
-            "INSERT INTO users (email, password_hash, status, is_admin, email_verified_at, last_active_at, created_at)
-             VALUES (:email, :pwd, 'active', 0, NOW(), NOW(), NOW())",
-            [
+            // 1. Create real user account for bot
+            $email = 'bot_' . bin2hex(random_bytes(6)) . '@milan.internal';
+            $passwordHash = Security::hashPassword(bin2hex(random_bytes(16)));
+
+            $stmt = $pdo->prepare(
+                "INSERT INTO users (email, password_hash, status, is_admin, email_verified_at, last_active_at, created_at)
+                 VALUES (:email, :pwd, 'active', 0, NOW(), NOW(), NOW())"
+            );
+            $stmt->execute([
                 ':email' => $email,
                 ':pwd' => $passwordHash,
-            ]
-        );
+            ]);
+            $userId = (int)$pdo->lastInsertId();
 
-        // 2. Create real user profile
-        $lookingFor = ($gender === 'female') ? 'men' : 'women';
-        Database::insert(
-            "INSERT INTO user_profiles (user_id, name, age, gender, looking_for, city, bio, primary_photo, is_verified, kyc_status, created_at)
-             VALUES (:uid, :name, :age, :gender, :lf, :city, :bio, :photo, 1, 'verified', NOW())",
-            [
+            // 2. Create real user profile
+            $lookingFor = ($gender === 'female') ? 'men' : 'women';
+            $stmt = $pdo->prepare(
+                "INSERT INTO user_profiles (user_id, name, dob, age, gender, looking_for, city, bio, primary_photo, is_verified, kyc_status, created_at)
+                 VALUES (:uid, :name, DATE_SUB(CURDATE(), INTERVAL :age YEAR), :age2, :gender, :lf, :city, :bio, :photo, 1, 'verified', NOW())"
+            );
+            $stmt->execute([
                 ':uid' => $userId,
                 ':name' => $name,
                 ':age' => $age,
+                ':age2' => $age,
                 ':gender' => $gender,
                 ':lf' => $lookingFor,
                 ':city' => $city,
                 ':bio' => $bio,
                 ':photo' => $avatarUrl,
-            ]
-        );
+            ]);
 
-        // 3. Create Admin Bot record
-        $botId = Database::insert(
-            "INSERT INTO admin_bots (user_id, name, avatar_url, is_active, created_at)
-             VALUES (:uid, :name, :photo, 1, NOW())",
-            [
+            // 2b. Add primary photo record to user_photos
+            if (!empty($avatarUrl)) {
+                $stmt = $pdo->prepare(
+                    "INSERT INTO user_photos (user_id, photo_url, is_primary, created_at)
+                     VALUES (:uid, :url, 1, NOW())"
+                );
+                $stmt->execute([
+                    ':uid' => $userId,
+                    ':url' => $avatarUrl,
+                ]);
+            }
+
+            // 2c. Add default dating preferences
+            $prefGender = ($gender === 'female') ? 'male' : 'female';
+            $stmt = $pdo->prepare(
+                "INSERT INTO dating_preferences (user_id, interested_in_gender, age_min, age_max, city_preference)
+                 VALUES (:uid, :pref_gender, 18, 55, :city)"
+            );
+            $stmt->execute([
+                ':uid' => $userId,
+                ':pref_gender' => $prefGender,
+                ':city' => $city,
+            ]);
+
+            // 3. Create Admin Bot record
+            $stmt = $pdo->prepare(
+                "INSERT INTO admin_bots (user_id, name, avatar_url, is_active, created_at)
+                 VALUES (:uid, :name, :photo, 1, NOW())"
+            );
+            $stmt->execute([
                 ':uid' => $userId,
                 ':name' => $name,
                 ':photo' => $avatarUrl,
-            ]
-        );
+            ]);
+            $botId = (int)$pdo->lastInsertId();
 
-        // 4. If initial message provided, save to admin_bot_messages
-        if (!empty($initialMessage)) {
-            Database::insert(
-                "INSERT INTO admin_bot_messages (bot_id, message_order, delay_minutes, message_text, created_at)
-                 VALUES (:bid, 1, :delay, :msg, NOW())",
-                [
+            // 4. If initial message provided, save to admin_bot_messages
+            if (!empty($initialMessage)) {
+                $stmt = $pdo->prepare(
+                    "INSERT INTO admin_bot_messages (bot_id, message_order, delay_minutes, message_text, created_at)
+                     VALUES (:bid, 1, :delay, :msg, NOW())"
+                );
+                $stmt->execute([
                     ':bid' => $botId,
                     ':delay' => $initialDelay,
                     ':msg' => $initialMessage,
-                ]
-            );
-        }
+                ]);
+            }
 
-        AdminAuth::logAudit('create_bot', 'admin_bots', $botId, "Created bot: {$name} (User #{$userId})");
-        Session::flash('success', "Admin Bot '{$name}' created successfully!");
-        header('Location: /admin/bots');
-        exit;
+            $pdo->commit();
+            AdminAuth::logAudit('create_bot', 'admin_bots', $botId, "Created bot: {$name} (User #{$userId})");
+
+            $successMsg = "Admin Bot '{$name}' created successfully!";
+            if ($isAjax) {
+                View::json([
+                    'success' => true,
+                    'message' => $successMsg,
+                    'bot_id' => $botId,
+                    'user_id' => $userId,
+                    'name' => $name,
+                    'avatar_url' => $avatarUrl,
+                ]);
+            }
+
+            Session::flash('success', $successMsg);
+            header('Location: /admin/bots');
+            exit;
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            error_log('Bot creation error: ' . $e->getMessage());
+            $errorMsg = 'Failed to create bot: ' . $e->getMessage();
+            if ($isAjax) {
+                View::json(['success' => false, 'error' => $errorMsg], 500);
+            }
+            Session::flash('error', $errorMsg);
+            header('Location: /admin/bots');
+            exit;
+        }
     }
 
     /**

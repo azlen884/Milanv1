@@ -209,9 +209,9 @@ class SettingsController {
             View::json(['success' => false, 'error' => 'Photo not found.'], 404);
         }
 
-        // Delete physical file safely
+        // Delete physical file safely (do not delete default system assets)
         $filePath = dirname(__DIR__, 2) . '/public' . $photo['photo_url'];
-        if (file_exists($filePath) && is_file($filePath)) {
+        if (!str_contains($photo['photo_url'], 'default_') && file_exists($filePath) && is_file($filePath)) {
             @unlink($filePath);
         }
         Database::execute("DELETE FROM user_photos WHERE id = :id", [':id' => $photoId]);
